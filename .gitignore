@@ -1,0 +1,17 @@
+[Ll]ibrary/
+[Tt]emp/
+[Oo]bj/
+[Ll]ogs/
+UserSettings/
+Builds/
+.vs/
+*.csproj
+*.sln
+*.user
+Packages/Local/
+# Reproducible editor-generated content; source of truth is StudioProject.cs.
+Assets/XReality/Generated/
+Assets/XReality/Generated.meta
+
+__pycache__/
+*.pyc

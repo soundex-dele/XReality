@@ -1,0 +1,17 @@
+XReality third-party asset provenance
+
+Native plugin and managed wrapper: homuler/MediaPipeUnityPlugin v0.16.3 (MIT wrapper; dependencies have their own licenses). The accompanying MIT and third-party notices are copied verbatim from the pinned release.
+https://github.com/homuler/MediaPipeUnityPlugin/releases/tag/v0.16.3
+
+Optional download from Google selected by the user, not bundled or mirrored by XReality:
+Unmodified Google MediaPipe Face Landmarker task (float16/1):
+https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task
+SHA256 64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff
+Official model overview: https://ai.google.dev/edge/mediapipe/solutions/vision/face_landmarker
+Component model cards:
+https://storage.googleapis.com/mediapipe-assets/MediaPipe%20BlazeFace%20Model%20Card%20(Short%20Range).pdf
+https://storage.googleapis.com/mediapipe-assets/Model%20Card%20MediaPipe%20Face%20Mesh%20V2.pdf
+https://storage.googleapis.com/mediapipe-assets/Model%20Card%20Blendshape%20V2.pdf
+Consult the upstream model terms before using or redistributing the separate downloaded model. No upstream endorsement implied.
+
+The procedural character meshes, room, animations, materials and sound are created by the project's own code; no marketplace avatar or third-party character likeness is used.
