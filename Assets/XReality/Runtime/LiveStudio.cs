@@ -25,15 +25,47 @@ namespace XReality
         float l, r, j, sl, sr, bl, br, round, press;
         internal FacePose? TestPose;
         GaussianPresenter gaussian;
+        Gaussian306Live gaussian306;
         internal const string GaussianFlag = "-avatar-3dgs";
         void Start()
         {
             bodyBase = torso.localPosition;
-            if (Array.Exists(Environment.GetCommandLineArgs(), arg => string.Equals(arg, GaussianFlag, StringComparison.OrdinalIgnoreCase)))
+            var args = Environment.GetCommandLineArgs();
+            if (Gaussian306Live.Requested(args)) Start306(args);
+            else if (Array.Exists(args, arg => string.Equals(arg, GaussianFlag, StringComparison.OrdinalIgnoreCase)))
                 StartGaussianPresenter();
             RefreshInstalledModel();
             RefreshDevices(EnumerateDevices);
             ShowDesk(true);
+        }
+
+        internal bool Start306(string[] args)
+        {
+            if (gaussian306 != null) return true;
+            if (Gaussian306Live.TryStart(args, torso, stageCamera, out gaussian306))
+            {
+                Debug.Log("XR_GA_306_LIVE_ACTIVE: external research rig");
+                return true;
+            }
+            Debug.LogWarning("XR_GA_306_LIVE_FALLBACK: missing or invalid -ga306-asset, or unsupported graphics; keeping mesh presenter.");
+            return false;
+        }
+
+        internal bool Refresh306()
+        {
+            if (gaussian306 == null) return false;
+            try
+            {
+                gaussian306.Refresh(head.localRotation, new Vector4(l, r, j, (sl + sr) * .5f * (1 - .45f * j)));
+                return true;
+            }
+            catch (Exception error)
+            {
+                gaussian306.Dispose();
+                gaussian306 = null;
+                Debug.LogWarning("XR_GA_306_LIVE_FALLBACK: pose upload failed; keeping mesh presenter: " + error.GetType().Name);
+                return false;
+            }
         }
 
         internal bool StartGaussianPresenter()
@@ -119,7 +151,8 @@ namespace XReality
         {
             ApplyFacePose(TestPose ?? (capture.Active ? capture.PoseAt(Time.realtimeSinceStartupAsDouble) : FacePose.Neutral), Time.unscaledDeltaTime);
             torso.localPosition = bodyBase + Vector3.up * (.014f * Mathf.Sin(Time.unscaledTime * 1.8f));
-            RefreshGaussianPresenter();
+            if (gaussian306 != null) Refresh306();
+            else RefreshGaussianPresenter();
         }
 
         internal bool RefreshGaussianPresenter()
@@ -336,6 +369,7 @@ namespace XReality
 
         protected override void OnDestroy()
         {
+            gaussian306?.Dispose();
             gaussian?.Dispose();
             view?.Dispose();
             Cursor.visible = true;

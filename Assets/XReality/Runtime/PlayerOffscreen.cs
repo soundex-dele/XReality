@@ -170,6 +170,11 @@ namespace XReality
             if (!live || live.enabled || !live.capture || live.capture.Active || FindFirstObjectByType<PetRoom>())
                 throw new InvalidOperationException("Packaged live scene isolation or capture state is invalid.");
             Debug.Log("XR_PLAYER_HOME_ROUTES_OK: rendered menu; pet entry; home return; live entry, camera inactive");
+            if (Gaussian306Live.Requested(Environment.GetCommandLineArgs()))
+            {
+                Capture306(live);
+                yield break;
+            }
             if (Array.Exists(Environment.GetCommandLineArgs(), arg => string.Equals(arg, LiveStudio.GaussianFlag, StringComparison.OrdinalIgnoreCase)))
             {
                 if (modelPath != null || retryScreenshots || downloadScreenshots || petPhase != null)
@@ -230,6 +235,74 @@ namespace XReality
             Debug.Log("XR_PLAYER_BUNDLED_MODEL_OK: verified packaged model selected, offline; camera inactive");
             foreach (var step in CaptureDeviceSelection(live, bundledSetup)) yield return step;
             foreach (var step in CaptureLiveSafety(live)) yield return step;
+        }
+
+        void Capture306(LiveStudio live)
+        {
+            var source = live.torso.GetComponentsInChildren<Renderer>();
+            if (live.Start306(new[] { Gaussian306Live.Flag }) || Array.Exists(source, r => r.forceRenderingOff))
+                throw new InvalidOperationException("Missing 306 input did not preserve the default avatar.");
+            if (!live.Start306(Environment.GetCommandLineArgs())) throw new InvalidOperationException("Local 306 rig did not start.");
+            foreach (var renderer in source)
+                if (!renderer.forceRenderingOff) throw new InvalidOperationException("Mesh presenter was not hidden.");
+            live.ShowDesk(false);
+            live.ToggleOutput();
+            Color32[] Pose(string name, FacePose pose)
+            {
+                live.ApplyFacePose(pose, 1);
+                if (!live.Refresh306()) throw new InvalidOperationException("306 pose refresh failed.");
+                return OffscreenFrame.Save(live.stageCamera, folder, name, true);
+            }
+            var neutral = Pose("306-Live-Neutral", FacePose.Neutral);
+            var left = Pose("306-Live-LeftBlink", new FacePose { rotation = Quaternion.identity, left = 1 });
+            var right = Pose("306-Live-RightBlink", new FacePose { rotation = Quaternion.identity, right = 1 });
+            var jaw = Pose("306-Live-Jaw", new FacePose { rotation = Quaternion.identity, jaw = .8f });
+            var smile = Pose("306-Live-Smile", new FacePose { rotation = Quaternion.identity, smileLeft = 1, smileRight = 1 });
+            var turned = Pose("306-Live-Turn", new FacePose { rotation = Quaternion.Euler(4, 24, -3) });
+            var idle = Pose("306-Live-Reset", FacePose.Neutral);
+            int LeftEye(Color32[] image) => ChangedFacePixels(neutral, image, 640, 749, 399, 466);
+            int RightEye(Color32[] image) => ChangedFacePixels(neutral, image, 528, 639, 399, 466);
+            int Mouth(Color32[] image) => ChangedFacePixels(neutral, image, 553, 727, 272, 390);
+            int l = LeftEye(left), r = RightEye(right), j = Mouth(jaw), s = Mouth(smile), t = ChangedFacePixels(neutral, turned);
+            int lCross = RightEye(left), rCross = LeftEye(right), reset = ChangedFacePixels(neutral, idle);
+            Debug.Log($"XR_GA_306_POSES: left/right {l}/{r} (cross {lCross}/{rCross}); jaw/smile {j}/{s}; turn {t}; reset {reset}");
+            if (l < 100 || r < 100 || lCross > l * .5f || rCross > r * .5f || j < 300 || s < 250 || t < 3000 || reset > 100)
+                throw new InvalidOperationException("306 synthetic pose assertions failed.");
+            if (modelPath != null)
+            {
+                using var inference = new FaceInference(FaceModel.ReadVerified(modelPath));
+                var portrait = new Texture2D(2,2,TextureFormat.RGBA32,false);
+                try
+                {
+                    if (!portrait.LoadImage(File.ReadAllBytes(portraitPath))) throw new InvalidDataException("Invalid QA portrait.");
+                    var pixels = portrait.GetPixels32(); var blank = new Color32[pixels.Length];
+                    if (!inference.Process(pixels, portrait.width, portrait.height, true, 0, 33, out var face))
+                        throw new InvalidOperationException("306 test fixture was not detected.");
+                    live.capture.AcceptFaceSample(true, face, 1);
+                    var tracked = Pose("306-Live-OfflineFace", live.capture.PoseAt(1));
+                    bool present = inference.Process(blank, portrait.width, portrait.height, true, 0, 66, out var lost);
+                    live.capture.AcceptFaceSample(present, lost, 1.2);
+                    var dropped = Pose("306-Live-OfflineLost", live.capture.PoseAt(1.2));
+                    int detected = ChangedFacePixels(neutral, tracked), released = ChangedFacePixels(neutral, dropped);
+                    if (present || detected < 500 || released > 100) throw new InvalidOperationException($"306 fixture tracking {detected}/{released}.");
+                    Debug.Log($"XR_GA_306_INFERENCE_OK: actual MediaPipe portrait/loss {detected}/{released} changed pixels");
+                }
+                finally { Destroy(portrait); }
+            }
+            const int workload = 90;
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            for (int i = 0; i < workload; i++)
+            {
+                float phase = i * .14f;
+                live.ApplyFacePose(new FacePose { rotation = Quaternion.Euler(5 * Mathf.Cos(phase), 23 * Mathf.Sin(phase), 0),
+                    left = Mathf.Max(0, Mathf.Sin(phase * 3)), jaw = .3f * (1 + Mathf.Sin(phase * 2)) }, 1f / 30);
+                if (!live.Refresh306()) throw new InvalidOperationException("306 repeated pose update failed.");
+            }
+            Debug.Log($"XR_GA_306_CPU: {watch.Elapsed.TotalMilliseconds / workload:F2} ms average pose update and upload (no capture or render)");
+            live.ToggleOutput();
+            if (live.capture.Active || !live.Desk.Visible || live.capture.CleanOutput)
+                throw new InvalidOperationException("306 exercised camera or failed to restore the desk.");
+            Debug.Log("XR_GA_306_LIVE_QA_OK: synthetic tracking and green output; no webcam");
         }
 
         void CaptureGaussian(LiveStudio live)
