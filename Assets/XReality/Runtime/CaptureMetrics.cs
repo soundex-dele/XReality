@@ -22,6 +22,8 @@ namespace XReality
         long firstMemory, lastMemory, peakMemory;
         double worstCleanMs;
         internal int MemorySamples => memorySamples;
+        internal double LongestCleanSeconds => longestClean;
+        internal double CleanMeanFps => cleanSeconds > 0 ? cleanFrames / cleanSeconds : 0;
         public bool Running { get; private set; }
         public string Report { get; private set; }
 

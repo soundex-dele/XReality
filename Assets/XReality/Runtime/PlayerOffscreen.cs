@@ -17,7 +17,9 @@ namespace XReality
         int soakSeconds;
         const string PetFixtures = "--xr-pet-screenshots";
         string folder, modelPath, portraitPath, petPhase;
-        bool downloadScreenshots, retryScreenshots, resumeScreenshots;
+        bool downloadScreenshots, retryScreenshots, resumeScreenshots, manualResumeScreenshots;
+        int loopbackPort;
+        string loopbackFingerprint;
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
         static void Launch()
@@ -26,13 +28,17 @@ namespace XReality
             int index = Array.IndexOf(args, Flag);
             if (index < 0 || !Application.isBatchMode || Application.isEditor) return;
             int tracking = Array.IndexOf(args, TrackingFixtures);
+            int loopback = Array.IndexOf(args, "--xr-download-loopback"), port = 0;
+            bool invalidLoopback = loopback >= 0 && (loopback + 2 >= args.Length ||
+                !int.TryParse(args[loopback + 1], out port) || port < 1024 || port > 65535 ||
+                Array.IndexOf(args, "--xr-manual-resume-screenshots") < 0);
             int pet = Array.IndexOf(args, PetFixtures);
             int soak = Array.IndexOf(args, SoakFlag), duration = 0;
             bool invalidSoak = soak >= 0 && (tracking < 0 || soak + 1 >= args.Length ||
                 !int.TryParse(args[soak + 1], out duration) || duration < 30 || duration > 1800);
             bool invalidPet = pet >= 0 && (pet + 2 >= args.Length ||
                 (args[pet + 1] != "play" && args[pet + 1] != "restore") || !Guid.TryParseExact(args[pet + 2], "N", out _));
-            if (index + 1 >= args.Length || invalidPet || invalidSoak || (tracking >= 0 && tracking + 2 >= args.Length) ||
+            if (index + 1 >= args.Length || invalidPet || invalidSoak || invalidLoopback || (tracking >= 0 && tracking + 2 >= args.Length) ||
                 SystemInfo.graphicsDeviceType == GraphicsDeviceType.Null ||
                 Array.IndexOf(args, "--xr-smoke") >= 0)
             {
@@ -48,6 +54,9 @@ namespace XReality
             run.retryScreenshots = Array.IndexOf(args, "--xr-retry-screenshots") >= 0;
             run.downloadScreenshots = Array.IndexOf(args, "--xr-download-screenshots") >= 0;
             run.resumeScreenshots = Array.IndexOf(args, "--xr-resume-screenshots") >= 0;
+            run.manualResumeScreenshots = Array.IndexOf(args, "--xr-manual-resume-screenshots") >= 0;
+            run.loopbackPort = port;
+            if (loopback >= 0) run.loopbackFingerprint = args[loopback + 2];
             if (tracking >= 0)
             {
                 run.modelPath = args[tracking + 1];
@@ -117,7 +126,8 @@ namespace XReality
                     throw new InvalidOperationException("Home previews must be visual only, without mode controllers or colliders.");
                 var backdrop = OffscreenFrame.Save(Camera.main, folder, "HomeBackdrop");
                 int catPixels = ShowcasePixels(backdrop, 525, 735, 225, 435);
-                int avatarPixels = ShowcasePixels(backdrop, 880, 1090, 385, 610);
+                // Exclude the pedestal; measure the head in its new, smaller showcase framing.
+                int avatarPixels = ShowcasePixels(backdrop, 910, 1050, 312, 447);
                 if (catPixels < 9000 || avatarPixels < 9000)
                     throw new InvalidOperationException($"Missing Home character render: {catPixels}/{avatarPixels} pixels.");
                 Debug.Log($"XR_PLAYER_HOME_SHOWCASE_OK: cat/character {catPixels}/{avatarPixels} foreground pixels");
@@ -160,6 +170,13 @@ namespace XReality
             if (!live || live.enabled || !live.capture || live.capture.Active || FindFirstObjectByType<PetRoom>())
                 throw new InvalidOperationException("Packaged live scene isolation or capture state is invalid.");
             Debug.Log("XR_PLAYER_HOME_ROUTES_OK: rendered menu; pet entry; home return; live entry, camera inactive");
+            if (Array.Exists(Environment.GetCommandLineArgs(), arg => string.Equals(arg, LiveStudio.GaussianFlag, StringComparison.OrdinalIgnoreCase)))
+            {
+                if (modelPath != null || retryScreenshots || downloadScreenshots || petPhase != null)
+                    throw new InvalidOperationException("Run the 3DGS pose smoke test separately from other optional QA fixtures.");
+                CaptureGaussian(live);
+                yield break;
+            }
             var stageOnly = OffscreenFrame.Save(live.stageCamera, folder, "LiveStageOnly");
             live.ShowDesk(false); // Real controls, no input module, device enumeration or model setup.
             yield return null;
@@ -168,10 +185,13 @@ namespace XReality
                 throw new InvalidOperationException("The retained control panel was not rendered in the live preview.");
             live.ToggleOutput(); // Use the shipped clean-output path, not copied camera values.
             yield return null;
-            if (live.capture.Active || !live.capture.CleanOutput || live.stageCamera.backgroundColor != Color.green)
+            if (live.capture.Active || live.Desk.Visible || !live.capture.CleanOutput || live.stageCamera.backgroundColor != Color.green ||
+                Application.targetFrameRate != LiveStudio.CleanFrameRateCap)
                 throw new InvalidOperationException("Clean output did not enable the green stage without capture.");
             var neutral = OffscreenFrame.Save(live.stageCamera, folder, "LiveOutput", true);
-            for (int y = 35; y < 680; y++)
+            // The new bust extends into the lower left of the framing. The upper
+            // panel region must still be pixel-perfect green; canvas visibility is checked above.
+            for (int y = 360; y < 680; y++)
                 for (int x = 28; x < 372; x++)
                 {
                     var pixel = neutral[y * OffscreenFrame.Width + x];
@@ -180,21 +200,333 @@ namespace XReality
                 }
             if (modelPath != null)
                 foreach (var step in CaptureTracking(live, neutral)) yield return step;
+            foreach (var step in CaptureMotionResponse(live, neutral)) yield return step;
+            foreach (var step in CaptureFaceDropout(live, neutral)) yield return step;
+            foreach (var step in CaptureEyeGaze(live, neutral)) yield return step;
+            foreach (var step in CaptureLipArticulation(live, neutral)) yield return step;
             if (soakSeconds > 0)
                 foreach (var step in CaptureSoak(live, neutral)) yield return step;
             live.ToggleOutput();
             yield return null;
             var restored = OffscreenFrame.Save(live.stageCamera, folder, "LiveControlsRestored");
             int restoredDifference = PanelPixelsChanged(withControls, restored);
-            if (live.capture.Active || restoredDifference > 500)
+            if (live.capture.Active || !live.Desk.Visible || restoredDifference > 500 || Application.targetFrameRate != DeskPanel.DefaultFrameRate)
                 throw new InvalidOperationException($"The control panel did not restore cleanly ({restoredDifference} changed pixels).");
             Debug.Log("XR_PLAYER_CONTROLS_OK: preview visible; clean area pure green; controls restored");
             if (modelPath != null)
                 foreach (var step in CaptureModelSetup(live, withControls)) yield return step;
             if (retryScreenshots)
                 foreach (var step in CaptureRetry(live, withControls)) yield return step;
-            if (downloadScreenshots || resumeScreenshots)
+            if (downloadScreenshots || resumeScreenshots || manualResumeScreenshots)
                 foreach (var step in CaptureDownload(live, withControls)) yield return step;
+            live.RefreshInstalledModel();
+            FaceModel.ReadForCapture(out bool bundled);
+            if (!bundled || !live.InstalledModelReady || !live.DeskOffersCamera || live.DeskCanStartCamera || live.capture.Active)
+                throw new InvalidOperationException("Bundled model did not complete camera-free first-use setup.");
+            yield return null;
+            var bundledSetup = OffscreenFrame.Save(live.stageCamera, folder, "LiveBundledModelReady");
+            if (PanelPixelsChanged(withControls, bundledSetup) < 1000)
+                throw new InvalidOperationException("Bundled setup did not update the preview controls.");
+            Debug.Log("XR_PLAYER_BUNDLED_MODEL_OK: verified packaged model selected, offline; camera inactive");
+            foreach (var step in CaptureDeviceSelection(live, bundledSetup)) yield return step;
+            foreach (var step in CaptureLiveSafety(live)) yield return step;
+        }
+
+        void CaptureGaussian(LiveStudio live)
+        {
+            if (!live.StartGaussianPresenter()) throw new InvalidOperationException("Packaged 3DGS sample did not start.");
+            live.ShowDesk(false);
+            live.ToggleOutput();
+            if (live.capture.Active || live.Desk.Visible || !live.capture.CleanOutput)
+                throw new InvalidOperationException("3DGS clean output did not hide the desk or unexpectedly started capture.");
+            Color32[] Pose(string name, FacePose pose)
+            {
+                live.ApplyFacePose(pose, 1);
+                if (!live.RefreshGaussianPresenter()) throw new InvalidOperationException("3DGS pose refresh failed.");
+                return OffscreenFrame.Save(live.stageCamera, folder, name, true);
+            }
+            var neutral = Pose("3DGS-Neutral", FacePose.Neutral);
+            var blink = Pose("3DGS-Blink", new FacePose { rotation = Quaternion.identity, left = 1 });
+            var jaw = Pose("3DGS-Jaw", new FacePose { rotation = Quaternion.identity, jaw = .72f });
+            var turn = Pose("3DGS-Turn", new FacePose { rotation = Quaternion.Euler(3, 22, -4) });
+            var recovered = Pose("3DGS-Recovered", FacePose.Neutral);
+            int eyes = ChangedFacePixels(neutral, blink, 548, 733, 370, 455);
+            int mouth = ChangedFacePixels(neutral, jaw, 550, 730, 272, 377);
+            int head = ChangedFacePixels(neutral, turn);
+            int reset = ChangedFacePixels(neutral, recovered);
+            if (eyes < 100 || mouth < 300 || head < 3000 || reset > 100)
+                throw new InvalidOperationException($"Packaged 3DGS pose differences: {eyes}/{mouth}/{head}; reset {reset}.");
+            live.ToggleOutput();
+            if (!live.Desk.Visible || live.capture.Active || live.capture.CleanOutput)
+                throw new InvalidOperationException("3DGS preview controls did not recover.");
+            Debug.Log($"XR_PLAYER_3DGS_OK: blink/jaw/turn {eyes}/{mouth}/{head}; neutral restore {reset}; camera inactive");
+        }
+
+        System.Collections.Generic.IEnumerable<object> CaptureLipArticulation(LiveStudio live, Color32[] neutral)
+        {
+            var rig = live.faceSurface;
+            int round = rig.sharedMesh.GetBlendShapeIndex("LipRound");
+            int press = rig.sharedMesh.GetBlendShapeIndex("LipPress");
+            if (round < 0 || press < 0) throw new InvalidOperationException("The live presenter is missing its lip shapes.");
+            var vowel = FacePose.Neutral;
+            vowel.jaw = .40f;
+            live.ApplyFacePose(vowel, 1);
+            yield return null;
+            var plain = OffscreenFrame.Save(live.stageCamera, folder, "LiveJawOnly", true);
+            vowel.lipRound = .93f;
+            live.ApplyFacePose(vowel, 1);
+            if (rig.GetBlendShapeWeight(round) < 90 || Mathf.Abs(rig.GetBlendShapeWeight(2) - 56) > .1f)
+                throw new InvalidOperationException("The round vowel replaced jaw opening instead of layering onto it.");
+            yield return null;
+            var rounded = OffscreenFrame.Save(live.stageCamera, folder, "LiveLipRound", true);
+            int roundPixels = ChangedFacePixels(plain, rounded, 565, 715, 280, 365);
+            if (roundPixels < 240 || ChangedFacePixels(plain, rounded, 490, 790, 425, 490) > 40)
+                throw new InvalidOperationException($"The rounded vowel did not visibly change only the mouth area: {roundPixels} lip pixels.");
+
+            var stop = FacePose.Neutral;
+            stop.jaw = .15f;
+            stop.lipPress = .98f;
+            live.ApplyFacePose(stop, 1);
+            if (rig.GetBlendShapeWeight(press) < 75 || rig.GetBlendShapeWeight(2) > 2 ||
+                Mathf.Abs(rig.GetBlendShapeWeight(2) - live.teeth.GetBlendShapeWeight(0)) > .1f || rig.GetBlendShapeWeight(round) > .1f)
+                throw new InvalidOperationException("Lip compression did not close the jaw, or oral meshes lost synchronization.");
+            yield return null;
+            var compressed = OffscreenFrame.Save(live.stageCamera, folder, "LiveLipPress", true);
+            int pressPixels = ChangedFacePixels(neutral, compressed, 565, 715, 280, 365);
+            if (pressPixels < 180) throw new InvalidOperationException($"The pressed consonant was not visible: {pressPixels} lip pixels.");
+
+            vowel.lipPress = vowel.smileLeft = vowel.smileRight = 1;
+            live.ApplyFacePose(vowel, 1);
+            if (rig.GetBlendShapeWeight(press) > 1 || rig.GetBlendShapeWeight(3) > 16 || rig.GetBlendShapeWeight(4) > 16)
+                throw new InvalidOperationException("Incompatible shapes stacked at full weight with round lips.");
+            live.ApplyFacePose(FacePose.Neutral, 1);
+            if (rig.GetBlendShapeWeight(round) > .1f || rig.GetBlendShapeWeight(press) > .1f)
+                throw new InvalidOperationException("Lip motion did not release in idle.");
+            yield return null;
+            Debug.Log($"XR_PLAYER_LIP_ARTICULATION_OK: round/press {roundPixels}/{pressPixels} lip pixels; jaw sync, incompatible shapes constrained, neutral release");
+        }
+
+        System.Collections.Generic.IEnumerable<object> CaptureEyeGaze(LiveStudio live, Color32[] neutral)
+        {
+            if (!live.eyeLeft || !live.eyeRight || live.eyeLeft == live.eyeRight)
+                throw new InvalidOperationException("The live presenter has no independent eye pivots.");
+            var gaze = FacePose.Neutral;
+            gaze.gazeLeft = new Vector2(1, .35f);
+            gaze.gazeRight = new Vector2(.9f, .35f);
+            live.ApplyFacePose(gaze, 1);
+            var left = live.eyeLeft.localRotation;
+            var right = live.eyeRight.localRotation;
+            float leftYaw = Mathf.DeltaAngle(0, left.eulerAngles.y);
+            float rightYaw = Mathf.DeltaAngle(0, right.eulerAngles.y);
+            if (leftYaw < 10 || leftYaw > 14.01f || rightYaw < 10 || rightYaw > 14.01f ||
+                Mathf.DeltaAngle(0, left.eulerAngles.x) <= 1 || Quaternion.Angle(live.head.localRotation, Quaternion.identity) > .1f)
+                throw new InvalidOperationException("Gaze did not reach the eyes independently of the head or exceeded the authored limit.");
+            yield return null;
+            var side = OffscreenFrame.Save(live.stageCamera, folder, "LiveEyeGaze", true);
+            int leftPixels = ChangedFacePixels(neutral, side, 646, 728, 420, 467);
+            int rightPixels = ChangedFacePixels(neutral, side, 546, 623, 420, 467);
+            if (leftPixels < 35 || rightPixels < 35 || ChangedFacePixels(neutral, side, 470, 810, 255, 418) > 30)
+                throw new InvalidOperationException($"Eye motion was not localized to both eyes: {leftPixels}/{rightPixels} pixels.");
+            gaze.left = 1;
+            gaze.gazeLeft *= -1;
+            gaze.gazeRight *= -1;
+            live.ApplyFacePose(gaze, 1);
+            if (Quaternion.Angle(left, live.eyeLeft.localRotation) > .1f || Quaternion.Angle(right, live.eyeRight.localRotation) > .1f)
+                throw new InvalidOperationException("A blink changed the previous eye direction.");
+            gaze.left = 0;
+            live.ApplyFacePose(gaze, 1);
+            if (Mathf.DeltaAngle(0, live.eyeLeft.localEulerAngles.y) > -10 || Mathf.DeltaAngle(0, live.eyeRight.localEulerAngles.y) > -10)
+                throw new InvalidOperationException("The gaze could not move to the opposite side after a blink.");
+            live.ApplyFacePose(FacePose.Neutral, 1);
+            if (Quaternion.Angle(Quaternion.identity, live.eyeLeft.localRotation) > .1f || Quaternion.Angle(Quaternion.identity, live.eyeRight.localRotation) > .1f)
+                throw new InvalidOperationException("Idle did not restore centered eyes.");
+            yield return null;
+            Debug.Log($"XR_PLAYER_EYE_GAZE_OK: coordinated eye motion, {leftPixels}/{rightPixels} eye pixels, bounded, stable on blink, recentered on idle");
+        }
+
+        System.Collections.Generic.IEnumerable<object> CaptureFaceDropout(LiveStudio live, Color32[] neutral)
+        {
+            var capture = live.capture;
+            const double t = 10, frame = 1.0 / 30;
+            var pose = FacePose.Neutral;
+            pose.rotation = Quaternion.Euler(4, 23, 3);
+            pose.smileRight = .65f;
+            capture.AcceptFaceSample(false, FacePose.Neutral, t - frame);
+            if (!capture.Status.Contains("等待面部") || capture.PoseAt(t - frame).rotation != Quaternion.identity)
+                throw new InvalidOperationException("The detector must start with no held face.");
+            capture.AcceptFaceSample(true, pose, t);
+            live.ApplyFacePose(capture.PoseAt(t), 1);
+            yield return null; // Let the skinned meshes update before rendering the pose.
+            var tracked = OffscreenFrame.Save(live.stageCamera, folder, "LiveBeforeFaceDropout", true);
+            for (int i = 1; i <= 3; i++)
+            {
+                double now = t + i * frame;
+                capture.AcceptFaceSample(false, FacePose.Neutral, now);
+                live.ApplyFacePose(capture.PoseAt(now), (float)frame);
+            }
+            yield return null;
+            var held = OffscreenFrame.Save(live.stageCamera, folder, "LiveHeldFaceDropout", true);
+            if (ChangedFacePixels(tracked, held) > 100 || ChangedFacePixels(neutral, held) < 4000 || capture.Status.Contains("等待面部"))
+                throw new InvalidOperationException("An isolated detector miss changed the avatar or the tracking label.");
+            if (capture.PoseAt(t + 4 * frame).rotation != Quaternion.identity)
+                throw new InvalidOperationException("Without a fresh frame the hold did not expire on the render clock.");
+            capture.AcceptFaceSample(false, FacePose.Neutral, t + 4 * frame);
+            live.ApplyFacePose(capture.PoseAt(t + 4 * frame), (float)frame);
+            float returning = Quaternion.Angle(live.head.localRotation, Quaternion.identity);
+            if (!capture.Status.Contains("等待面部") || returning < 1 || returning >= 22)
+                throw new InvalidOperationException("A sustained miss did not smoothly start returning to idle.");
+            live.ApplyFacePose(capture.PoseAt(t + .5), 1);
+            yield return null;
+            var lost = OffscreenFrame.Save(live.stageCamera, folder, "LiveExpiredFaceDropout", true);
+            if (ChangedFacePixels(neutral, lost) > 100)
+                throw new InvalidOperationException("The expired face did not return to the neutral render.");
+            pose.rotation = Quaternion.Euler(-4, -12, -3);
+            capture.AcceptFaceSample(true, pose, t + .6);
+            if (Quaternion.Angle(capture.PoseAt(t + .6).rotation, pose.rotation) > .1f || capture.Status.Contains("等待面部"))
+                throw new InvalidOperationException("Reacquisition did not immediately feed the new pose to smoothing.");
+            capture.Release();
+            if (capture.PoseAt(t + .61).rotation != Quaternion.identity || !capture.Status.Contains("未启用"))
+                throw new InvalidOperationException("Stopping did not clear held tracking data.");
+            Debug.Log("XR_PLAYER_FACE_DROPOUT_OK: isolated misses held; render-clock expiry; smooth idle; fresh reacquisition; clear on stop");
+        }
+
+        System.Collections.Generic.IEnumerable<object> CaptureMotionResponse(LiveStudio live, Color32[] neutral)
+        {
+            var skin = live.faceSurface;
+            var blink = FacePose.Neutral;
+            blink.left = 1;
+            live.ApplyFacePose(FacePose.Neutral, 1);
+            for (int i = 0; i < 2; i++) live.ApplyFacePose(blink, 1f / 30);
+            float atThirty = skin.GetBlendShapeWeight(0);
+            if (atThirty < 90 || skin.GetBlendShapeWeight(1) > .1f)
+                throw new InvalidOperationException("Two 30 FPS blink samples did not close the intended eyelid.");
+            yield return null;
+            var closed = OffscreenFrame.Save(live.stageCamera, folder, "LiveQuickBlink", true);
+            if (ChangedFacePixels(neutral, closed) < 450)
+                throw new InvalidOperationException("The quick blink did not visibly reach the rig.");
+            for (int i = 0; i < 3; i++) live.ApplyFacePose(FacePose.Neutral, 1f / 30);
+            if (skin.GetBlendShapeWeight(0) > 8)
+                throw new InvalidOperationException("The eyelid stayed shut too long after a quick blink.");
+            live.ApplyFacePose(FacePose.Neutral, 1);
+            for (int i = 0; i < 4; i++) live.ApplyFacePose(blink, 1f / 60);
+            float atSixty = skin.GetBlendShapeWeight(0);
+            if (Mathf.Abs(atThirty - atSixty) > 1)
+                throw new InvalidOperationException("Blink response changed with the render frame rate over the same elapsed time.");
+
+            var turn = FacePose.Neutral;
+            turn.rotation = Quaternion.Euler(-35, 72, 32);
+            live.ApplyFacePose(turn, 1);
+            var combinedLimit = Quaternion.Euler(new Vector3(-26, 44, 22) / Mathf.Sqrt(3));
+            if (Quaternion.Angle(live.head.localRotation, combinedLimit) > .5f)
+                throw new InvalidOperationException("Wide head motion exceeded the authored neck range.");
+            yield return null;
+            var bounded = OffscreenFrame.Save(live.stageCamera, folder, "LiveBoundedTurn", true);
+            if (ChangedFacePixels(neutral, bounded) < 4000)
+                throw new InvalidOperationException("The bounded turn suppressed meaningful visible motion.");
+            live.ApplyFacePose(FacePose.Neutral, 1);
+            if (Quaternion.Angle(live.head.localRotation, Quaternion.identity) > .5f)
+                throw new InvalidOperationException("The head did not return to neutral after a large turn.");
+            Debug.Log($"XR_PLAYER_MOTION_RESPONSE_OK: blink 30/60 FPS {atThirty:F1}/{atSixty:F1}; bounded turn; neutral recovery");
+        }
+
+        System.Collections.Generic.IEnumerable<object> CaptureLiveSafety(LiveStudio live)
+        {
+            var capture = live.capture;
+            // Drive the actual session clock with synthetic timestamps, never a capture device.
+            double start = Time.realtimeSinceStartupAsDouble - 8;
+            capture.BeginFrameSession(start);
+            capture.OnMissingVideoFrame(start + 1);
+            if (!capture.Status.Contains("等待摄像头") || !capture.Metrics.Running)
+                throw new InvalidOperationException("A camera still warming up was reported as stalled.");
+            capture.OnMissingVideoFrame(start + 6);
+            if (capture.Metrics.Running || capture.Issue != FaceCapture.SetupIssue.Camera ||
+                !capture.Metrics.Report.Contains("End reason: camera startup timeout"))
+                throw new InvalidOperationException("Startup without a frame did not produce timeout guidance.");
+            live.RefreshDesk();
+            yield return null;
+            var timeout = OffscreenFrame.Save(live.stageCamera, folder, "LiveCameraStartupTimeout");
+
+            capture.BeginFrameSession(start);
+            capture.NoteVideoFrame(start + 1);
+            capture.OnMissingVideoFrame(start + 1.2);
+            if (capture.Status.Contains("暂停")) throw new InvalidOperationException("A short gap produced a false stall.");
+            capture.OnMissingVideoFrame(start + 1.5);
+            live.RefreshDesk();
+            if (!live.Desk.StatusLabel.Contains("画面暂停") || !capture.Metrics.Running || capture.HasFace)
+                throw new InvalidOperationException("Camera stall did not enter waiting-for-video state.");
+            yield return null;
+            var stalled = OffscreenFrame.Save(live.stageCamera, folder, "LiveCameraStalled");
+            if (PanelPixelsChanged(timeout, stalled) < 300)
+                throw new InvalidOperationException("The stalled view did not distinguish itself from startup timeout.");
+            capture.NoteVideoFrame(start + 4.5);
+            capture.OnMissingVideoFrame(start + 7);
+            if (!capture.Metrics.Running) throw new InvalidOperationException("A fresh video frame did not extend the deadline.");
+            capture.OnMissingVideoFrame(start + 10.5);
+            if (capture.Metrics.Running || !capture.Status.Contains("已中断") ||
+                !capture.Metrics.Report.Contains("End reason: camera stalled"))
+                throw new InvalidOperationException("Persistent interruption did not stop the session with a distinct reason.");
+
+            capture.BeginFrameSession(Time.realtimeSinceStartupAsDouble);
+            live.HandleStudioCommands(stop: false, toggle: true, escape: false);
+            live.HandleStudioCommands(stop: true, toggle: false, escape: true);
+            string report = capture.Metrics.Report;
+            if (capture.Active || capture.Metrics.Running || !capture.CleanOutput || live.Desk.Visible ||
+                live.stageCamera.backgroundColor != Color.green || report == null || !report.Contains("End reason: stopped"))
+                throw new InvalidOperationException("Stop command did not close the session in clean output.");
+            live.HandleStudioCommands(stop: true, toggle: false, escape: false);
+            if (capture.Metrics.Report != report) throw new InvalidOperationException("Repeated stop changed the previous report.");
+            yield return null;
+            OffscreenFrame.Save(live.stageCamera, folder, "LivePrivacyStopClean", true);
+            live.HandleStudioCommands(stop: false, toggle: false, escape: true);
+            if (!live.Desk.Visible || capture.CleanOutput || !live.Desk.StatusLabel.Contains("未启用"))
+                throw new InvalidOperationException("Preview did not show the camera as off after closing clean output.");
+            Debug.Log("XR_PLAYER_LIVE_SAFETY_OK: short gaps, startup timeout, stalled video, privacy stop retains clean output; no hardware");
+        }
+
+        System.Collections.Generic.IEnumerable<object> CaptureDeviceSelection(LiveStudio live, Color32[] noDevice)
+        {
+            const string a = "QA Camera A", b = "QA Camera B";
+            live.RefreshDevices(() => new[] { a, b }, cycle: true);
+            live.RefreshDesk();
+            if (!live.DeskCanStartCamera || live.Desk.DeviceLabel != a)
+                throw new InvalidOperationException("First refresh skipped the first camera.");
+            live.RefreshDevices(() => new[] { a, b }, cycle: true);
+            live.RefreshDesk();
+            if (live.Desk.DeviceLabel != b)
+                throw new InvalidOperationException("Camera cycling did not select the next distinct device name.");
+            live.RefreshDevices(() => new[] { b, a }, cycle: true);
+            live.RefreshDesk();
+            if (live.Desk.DeviceLabel != b)
+                throw new InvalidOperationException("A reordered list did not preserve the selected camera.");
+
+            string opened = null;
+            void Remember(string name) => opened = name; // No hardware enumeration or camera open in QA.
+            live.TryEnableSelectedCamera(() => new[] { a }, Remember);
+            if (opened != null || !live.DeskCanStartCamera || live.Desk.DeviceLabel != a ||
+                !live.Desk.StatusLabel.Contains("重新启用"))
+                throw new InvalidOperationException("Removed camera was auto-replaced or the desk did not explain how to retry.");
+            yield return null;
+            var changed = OffscreenFrame.Save(live.stageCamera, folder, "LiveCameraChanged");
+            if (PanelPixelsChanged(noDevice, changed) < 500)
+                throw new InvalidOperationException("Camera change did not visibly update the controls.");
+            live.TryEnableSelectedCamera(() => new[] { a, a }, Remember);
+            if (opened != null || live.DeskCanStartCamera || !live.Desk.StatusLabel.Contains("同名"))
+                throw new InvalidOperationException("Ambiguous camera names were not rejected.");
+            live.RefreshDevices(() => new[] { a });
+            live.RefreshDesk();
+            live.TryEnableSelectedCamera(() => throw new InvalidOperationException("QA enumeration failure"), Remember);
+            if (opened != null || live.DeskCanStartCamera || !live.Desk.StatusLabel.Contains("重试"))
+                throw new InvalidOperationException("Enumeration failure leaked a stale selection.");
+            yield return null;
+            var failed = OffscreenFrame.Save(live.stageCamera, folder, "LiveCameraEnumerationFailed");
+            if (PanelPixelsChanged(changed, failed) < 500)
+                throw new InvalidOperationException("Camera enumeration error did not visibly update the controls.");
+            live.RefreshDevices(() => new[] { a });
+            live.RefreshDesk();
+            live.TryEnableSelectedCamera(() => new[] { b, a }, Remember);
+            if (opened != a || live.capture.Active)
+                throw new InvalidOperationException("Retry failed to route to the confirmed device name without camera access.");
+            Debug.Log("XR_PLAYER_CAMERA_SELECTION_OK: reorder, removal, ambiguity, enumeration failure, explicit retry; camera inactive");
         }
 
         System.Collections.Generic.IEnumerable<object> CaptureModelSetup(LiveStudio live, Color32[] initial)
@@ -258,6 +590,26 @@ namespace XReality
                 if (PanelPixelsChanged(corrupt, installed) < 1000)
                     throw new InvalidOperationException("The installed-model controls did not update visibly.");
                 Debug.Log("XR_PLAYER_MODEL_SETUP_OK: missing -> checksum rejected -> ready, no camera");
+
+                // Simulate a loader error using the shipped failure path. Neither
+                // invalid binaries nor a physical camera are needed for this screenshot.
+                live.capture.HandleSetupFailure(new TypeInitializationException("Face native library",
+                    new DllNotFoundException()), openingCamera: false);
+                live.RefreshDesk();
+                yield return null;
+                var dependency = OffscreenFrame.Save(live.stageCamera, folder, "LiveDependencyMissing");
+                if (!live.InstalledModelReady || live.capture.Active || live.capture.Status != FaceCapture.DependencyStatus ||
+                    live.capture.Issue != FaceCapture.SetupIssue.Dependency || PanelPixelsChanged(installed, dependency) < 100)
+                    throw new InvalidOperationException("Native load failure must keep the valid model and show its own status.");
+                live.capture.HandleSetupFailure(new IOException(), openingCamera: true);
+                if (live.capture.Issue != FaceCapture.SetupIssue.Camera)
+                    throw new InvalidOperationException("Camera I/O errors must not be mistaken for invalid models.");
+                live.capture.HandleSetupFailure(new InvalidDataException(), openingCamera: false);
+                if (live.capture.Issue != FaceCapture.SetupIssue.Model)
+                    throw new InvalidOperationException("Invalid model contents must not be mistaken for a camera error.");
+                live.capture.Release();
+                live.RefreshDesk();
+                Debug.Log("XR_PLAYER_SETUP_ERRORS_OK: dependency, camera, and model errors differentiated without camera use");
             }
             finally
             {
@@ -278,6 +630,7 @@ namespace XReality
             try
             {
                 live.RefreshInstalledModel();
+                if (loopbackPort != 0) live.ConfigureDownloadQaLoopback(loopbackPort, loopbackFingerprint);
                 live.Desk.ClickDownload();
                 if (!live.ModelDownloading || !live.Desk.OffersCancel || live.Desk.OffersDownload)
                     throw new InvalidOperationException("The download control did not open the progress view.");
@@ -291,6 +644,26 @@ namespace XReality
                     throw new InvalidOperationException("Download and cancel feedback must be visible.");
 
                 if (resumeScreenshots) live.ArmDownloadQaResume();
+                if (manualResumeScreenshots)
+                {
+                    live.SetDownloadQaFaults(1); // No data in first request.
+                    if (loopbackPort == 0) live.ArmDownloadQaResume(2); // The local server truncates the response itself.
+                    live.Desk.ClickDownload();
+                    foreach (var step in Until(() => !live.ModelDownloading, FaceModel.QaDownloadDeadlineSeconds,
+                        "The last attempt did not finish before the manual-continue check."))
+                    {
+                        live.RefreshDesk();
+                        yield return step;
+                    }
+                    live.RefreshDesk();
+                    var waiting = OffscreenFrame.Save(live.stageCamera, folder, "LiveModelWaitingToContinue");
+                    var parts = Directory.GetFiles(sandbox, "*.partial");
+                    if (live.ModelStatus != FaceModel.WaitingToResume || !live.Desk.OffersDownload ||
+                        live.Desk.DownloadTitle != "继续下载模型" || parts.Length != 1 ||
+                        new FileInfo(parts[0]).Length <= 0 || PanelPixelsChanged(cancelled, waiting) < 100)
+                        throw new InvalidOperationException("The last automatic attempt did not offer a usable manual resume.");
+                    Debug.Log($"XR_PLAYER_MANUAL_RESUME_PENDING: {new FileInfo(parts[0]).Length} bytes retained after automatic attempts");
+                }
                 live.Desk.ClickDownload();
                 if (!live.ModelDownloading) throw new InvalidOperationException("Retry did not start.");
                 bool sawResumeView = false;
@@ -321,6 +694,12 @@ namespace XReality
                     if (!sawResumeView || !live.DownloadQaResumed)
                         throw new InvalidOperationException("The download completed, but did not verify a real HTTP 206 resume.");
                     Debug.Log("XR_PLAYER_RESUME_SCREENSHOTS_OK: interrupted -> retained -> HTTP 206 -> verified and cleaned");
+                }
+                if (manualResumeScreenshots)
+                {
+                    if (!live.DownloadQaResumed)
+                        throw new InvalidOperationException("Manual continuation did not produce a verified HTTP 206 resume.");
+                    Debug.Log("XR_PLAYER_MANUAL_RESUME_OK: automatic attempts ended, user continued, SHA-256 verified and temporary data cleared");
                 }
             }
             finally
@@ -438,15 +817,25 @@ namespace XReality
             foreach (var step in Until(() => pet.CurrentMood == Mood.Sleep, 14, "Pet did not settle to sleep.")) yield return step;
             yield return new WaitForSeconds(.35f);
             OffscreenFrame.Save(pet.roomCamera, folder, "PetSleeping");
-            pet.Stroke();
-            for (int i = 0; i < 4; i++) pet.Stroke();
+            Ray At(Vector3 world) => pet.roomCamera.ViewportPointToRay(pet.roomCamera.WorldToViewportPoint(world));
+            void ClickCat(bool blocked)
+            {
+                Physics.SyncTransforms();
+                Ray ray = At(pet.head.position);
+                pet.HandlePointer(ray, true, true, false, blocked);
+                pet.HandlePointer(ray, false, false, true, blocked);
+            }
+            ClickCat(blocked: true);
+            if (pet.Bond != 0 || pet.CurrentMood != Mood.Sleep)
+                throw new InvalidOperationException("An overlay press reached the pet.");
+            for (int i = 0; i < 5; i++) ClickCat(blocked: false);
             if (pet.CurrentMood != Mood.EarFlick || pet.Bond != 1)
                 throw new InvalidOperationException("Sleepy strokes did not coalesce into one ear flick.");
             yield return new WaitForSeconds(.28f);
             OffscreenFrame.Save(pet.roomCamera, folder, "PetSleepyStroke");
 
             foreach (var step in Until(() => pet.CurrentMood == Mood.Watch, 10, "Pet did not wake after resting.")) yield return step;
-            pet.Stroke();
+            ClickCat(blocked: false);
             if (pet.CurrentMood != Mood.Nuzzle || pet.Bond != 2)
                 throw new InvalidOperationException("Awake stroke did not trigger a nuzzle.");
             yield return new WaitForSeconds(.42f);
@@ -456,7 +845,31 @@ namespace XReality
             {
                 var origin = pet.cat.position;
                 int before = pet.Memory.Window;
-                pet.OfferToy(2.45f, i % 2 == 0 ? -.95f : 1.05f);
+                if (i == 0)
+                {
+                    Physics.SyncTransforms();
+                    var initial = pet.toy.position;
+                    var gripOffset = new Vector3(.10f, 0, 0);
+                    Ray first = At(initial + gripOffset);
+                    Ray final = At(new Vector3(2.45f, .23f, -.95f) + gripOffset);
+                    pet.HandlePointer(first, true, true, false, false);
+                    pet.HandlePointer(first, false, true, false, false);
+                    if (Vector3.Distance(pet.toy.position, initial) > .002f || pet.CurrentMood != Mood.Nuzzle)
+                        throw new InvalidOperationException("Grabbing a toy moved it or started chase before dragging.");
+                    pet.HandlePointer(final, false, true, false, true);
+                    if (Vector3.Distance(pet.toy.position, initial) > .002f)
+                        throw new InvalidOperationException("Dragging over an overlay moved the toy.");
+                    pet.HandlePointer(final, false, true, false, false);
+                    if (Vector3.Distance(pet.toy.position, new Vector3(2.45f, .23f, -.95f)) > .01f)
+                        throw new InvalidOperationException("World-space drag ignored the grab offset or lost capture.");
+                    pet.HandlePointer(first, false, false, true, true);
+                    var released = pet.toy.position;
+                    pet.HandlePointer(first, false, true, false, false);
+                    if (Vector3.Distance(pet.toy.position, released) > .002f)
+                        throw new InvalidOperationException("Release over overlay left a stale toy grab.");
+                    Debug.Log("XR_PLAYER_PET_POINTER_OK: world hit, overlay isolation, grab offset and release");
+                }
+                else pet.OfferToy(2.45f, i % 2 == 0 ? -.95f : 1.05f);
                 if (pet.CurrentMood != Mood.Notice || pet.Memory.Window != before)
                     throw new InvalidOperationException("Offering a toy did not enter Notice without changing the ledger.");
                 if (i == 0)
@@ -497,7 +910,9 @@ namespace XReality
         // No WebcamTexture or image material. The fixture goes only through local CPU inference.
         System.Collections.Generic.IEnumerable<object> CaptureTracking(LiveStudio live, Color32[] neutral)
         {
-            using var inference = new FaceInference(FaceModel.ReadVerified(modelPath));
+            var modelBytes = FaceModel.ReadForCapture(out bool bundled);
+            if (!bundled) throw new InvalidOperationException("Inference QA must use the packaged model.");
+            using var inference = new FaceInference(modelBytes);
             var portrait = new Texture2D(2, 2, TextureFormat.RGBA32, false);
             try
             {
@@ -535,12 +950,20 @@ namespace XReality
                 // derived from the real CPU fixture, then apply a known relative pose.
                 var calibration = new NeutralCalibration();
                 calibration.Begin();
-                void AddFixture(int frames)
+                void AddFixture(int frames, bool blink = false)
                 {
                     for (int i = 0; i < frames; i++)
                     {
                         if (!Infer(pixels, out face)) throw new InvalidOperationException("Fixture disappeared during calibration.");
-                        calibration.Add(face, timestamp / 1000d);
+                        // The still portrait can already be smiling. Use deterministic
+                        // nonzero resting scores to assert the new relative channels independently.
+                        face.smileLeft = .16f;
+                        face.smileRight = .22f;
+                        face.browLeft = .12f;
+                        face.browRight = .19f;
+                        var sample = face;
+                        if (blink) sample.left = sample.right = .98f;
+                        calibration.Add(sample, timestamp / 1000d);
                     }
                 }
                 AddFixture(16);
@@ -555,12 +978,23 @@ namespace XReality
                 yield return null;
                 var pending = OffscreenFrame.Save(live.stageCamera, folder, "LiveCalibrationPending", true);
 
+                float beforeBlink = calibration.Progress;
+                AddFixture(4, blink: true);
+                if (calibration.Progress != beforeBlink || !calibration.Pending)
+                    throw new InvalidOperationException("A short blink reset or advanced neutral calibration.");
+                AddFixture(1);
+                if (calibration.Progress != beforeBlink)
+                    throw new InvalidOperationException("Time in a blink leaked into neutral calibration.");
                 AddFixture(17);
                 if (calibration.Pending || !calibration.Calibrated)
                     throw new InvalidOperationException("Continuous fixture samples did not complete calibration.");
                 var corrected = calibration.Apply(face);
                 if (Quaternion.Angle(corrected.rotation, Quaternion.identity) > 2f ||
-                    corrected.left > .025f || corrected.right > .025f || corrected.jaw > .025f)
+                    corrected.left > .025f || corrected.right > .025f || corrected.jaw > .025f ||
+                    corrected.smileLeft > .025f || corrected.smileRight > .025f ||
+                    corrected.browLeft > .025f || corrected.browRight > .025f ||
+                    corrected.gazeLeft.magnitude > .06f || corrected.gazeRight.magnitude > .06f ||
+                    corrected.lipRound > .04f || corrected.lipPress > .04f)
                     throw new InvalidOperationException("The steady fixture did not calibrate back to rest.");
                 live.ApplyFacePose(corrected, 1);
                 yield return null;
@@ -569,18 +1003,27 @@ namespace XReality
                 face.rotation *= Quaternion.Euler(0, 21, 0);
                 face.left = .98f;
                 face.jaw = .75f;
+                face.smileLeft = .9f;
+                face.browRight = .88f;
                 var expression = calibration.Apply(face);
                 if (Quaternion.Angle(expression.rotation, Quaternion.identity) < 16 || expression.left < .8f ||
-                    expression.right > .04f || expression.jaw < .7f)
-                    throw new InvalidOperationException("Calibration suppressed the relative pose or mixed independent expressions.");
+                    expression.right > .04f || expression.jaw < .7f || expression.smileLeft < .65f ||
+                    expression.browRight < .65f || expression.smileRight > .04f || expression.browLeft > .04f)
+                    throw new InvalidOperationException($"Calibration relative expressions: " +
+                        $"eye {expression.left:F3}/{expression.right:F3}, jaw {expression.jaw:F3}, " +
+                        $"smile {expression.smileLeft:F3}/{expression.smileRight:F3}, brow {expression.browLeft:F3}/{expression.browRight:F3}");
                 live.ApplyFacePose(expression, 1);
                 yield return null;
                 var expressive = OffscreenFrame.Save(live.stageCamera, folder, "LiveCalibrationExpression", true);
+                if (live.faceSurface.GetBlendShapeWeight(3) < 35 || live.faceSurface.GetBlendShapeWeight(4) > 4 ||
+                    live.brows.GetBlendShapeWeight(1) < 65 || live.brows.GetBlendShapeWeight(0) > 4)
+                    throw new InvalidOperationException("Calibrated smile or brow did not reach the intended side of the live rig.");
                 int pendingPixels = ChangedFacePixels(neutral, pending);
                 int centeredPixels = ChangedFacePixels(neutral, centered);
                 int relativePixels = ChangedFacePixels(centered, expressive);
                 if (pendingPixels > 100 || centeredPixels > 4500 || relativePixels < 5000 || live.capture.Active)
                     throw new InvalidOperationException($"Unexpected calibration render pixels: {pendingPixels}/{centeredPixels}/{relativePixels}.");
+                AssertCalibrationRestarts();
                 live.ApplyFacePose(FacePose.Neutral, 1);
                 Debug.Log($"XR_PLAYER_CALIBRATION_OK: reset on loss, steady fixture centered, independent synthetic expression; {pendingPixels}/{centeredPixels}/{relativePixels} pixels");
 
@@ -588,9 +1031,50 @@ namespace XReality
             finally { Destroy(portrait); }
         }
 
+        static void AssertCalibrationRestarts()
+        {
+            var calibration = new NeutralCalibration();
+            var rest = FacePose.Neutral;
+            void StartProgress()
+            {
+                calibration.Begin();
+                for (int i = 0; i < 15; i++) calibration.Add(rest, i * .033);
+                if (calibration.Progress < .5f) throw new InvalidOperationException("Calibration setup did not progress.");
+            }
+            void AssertZero(string cause)
+            {
+                if (!calibration.Pending || calibration.Progress != 0)
+                    throw new InvalidOperationException(cause + " did not reset calibration.");
+            }
+            var blink = rest;
+            blink.right = .98f;
+            StartProgress();
+            for (int i = 15; i <= 23; i++) calibration.Add(blink, i * .033);
+            AssertZero("Sustained closure");
+            StartProgress();
+            var talking = rest;
+            talking.jaw = .9f;
+            calibration.Add(talking, .495);
+            AssertZero("Open mouth");
+            StartProgress();
+            calibration.Add(rest, .8);
+            AssertZero("Stale samples");
+            StartProgress();
+            for (int i = 1; i <= 9; i++)
+            {
+                var drift = rest;
+                drift.rotation = Quaternion.Euler(0, i, 0);
+                calibration.Add(drift, (14 + i) * .033);
+            }
+            AssertZero("Slow head turn");
+            Debug.Log("XR_PLAYER_CALIBRATION_BLINK_OK: brief blink skipped; prolonged closure, mouth motion, stale samples, and head drift reset");
+        }
+
         System.Collections.Generic.IEnumerable<object> CaptureSoak(LiveStudio live, Color32[] neutral)
         {
-            using var inference = new FaceInference(FaceModel.ReadVerified(modelPath));
+            var modelBytes = FaceModel.ReadForCapture(out bool bundled);
+            if (!bundled) throw new InvalidOperationException("Inference QA must use the packaged model.");
+            using var inference = new FaceInference(modelBytes);
             var portrait = new Texture2D(2, 2, TextureFormat.RGBA32, false);
             var camera = live.stageCamera;
             bool cameraEnabled = camera.enabled;
@@ -609,11 +1093,12 @@ namespace XReality
                 double start = Time.realtimeSinceStartupAsDouble;
                 double interval = soakSeconds / 6d;
                 int rendered = 0, visible = 0, lost = 0, checkpoint = 0;
-                double[] at = { 1d, interval, 2 * interval + 2, 3 * interval, 4 * interval, 5 * interval, soakSeconds };
+                double[] at = { 1d, interval, 2 * interval + 2, 3 * interval, 4 * interval, 5 * interval };
+                const int lastCheckpoint = 7;
                 long stamp = 0;
                 bool reacquired = false;
                 stats.Begin(start);
-                Debug.Log($"XR_PLAYER_SOAK_START: {soakSeconds}s; CPU fixture {portrait.width}x{portrait.height}; output 1280x720");
+                Debug.Log($"XR_PLAYER_SOAK_START: {soakSeconds}s; CPU fixture {portrait.width}x{portrait.height}; output 1280x720; cap {Application.targetFrameRate} FPS");
                 for (;;)
                 {
                     double now = Time.realtimeSinceStartupAsDouble;
@@ -629,12 +1114,13 @@ namespace XReality
                     if (seen) { visible++; reacquired |= lost > 0; }
                     else if (blankFrame) lost++;
                     live.ApplyFacePose(pose, Time.unscaledDeltaTime);
-                    OffscreenFrame.Render(camera, rt);
+                    OffscreenFrame.Render(camera, rt, rebuildCanvas: false);
                     rendered++;
                     double after = Time.realtimeSinceStartupAsDouble;
                     stats.UpdateFrame(after, clean: true);
                     stats.SampleMemory(after);
-                    if (checkpoint < at.Length && age >= at[checkpoint])
+                    if ((checkpoint < at.Length && age >= at[checkpoint]) ||
+                        (checkpoint == at.Length && stats.LongestCleanSeconds >= soakSeconds))
                     {
                         int id = ++checkpoint;
                         var frame = OffscreenFrame.SaveRendered(rt, folder, $"LiveSoak{id:00}", true);
@@ -643,21 +1129,22 @@ namespace XReality
                             throw new InvalidOperationException($"Unexpected tracked/idle fixture state at soak checkpoint {id}: {changed} pixels.");
                         Debug.Log(FormattableString.Invariant($"XR_PLAYER_SOAK_CHECKPOINT: {id} at {age:F2}s; renders {rendered}, portrait {visible}, blank {lost}"));
                     }
-                    if (checkpoint == at.Length) break;
+                    if (checkpoint == lastCheckpoint) break;
                     if (live.capture.Active) throw new InvalidOperationException("Fixture soak must not activate a camera.");
                     yield return null;
                 }
                 double end = Time.realtimeSinceStartupAsDouble;
                 stats.End(end, "offscreen fixture completed");
-                double fps = rendered / (end - start);
+                double fps = stats.CleanMeanFps;
                 File.WriteAllText(Path.Combine(folder, "live-soak.txt"),
                     "Offline CPU fixture + explicit 720p URP draws; not webcam or desktop presentation data.\n" +
                     stats.Report.Replace("Camera", "Fixture").Replace("camera", "fixture"));
                 if (stats.MemorySamples < soakSeconds / 10)
                     throw new InvalidOperationException($"Insufficient application working-set samples: {stats.MemorySamples}.");
-                if (visible < rendered * .85 || lost == 0 || !reacquired || live.capture.Active || fps < 25)
+                if (visible < rendered * .85 || lost == 0 || !reacquired || live.capture.Active || fps < 30 ||
+                    stats.LongestCleanSeconds < soakSeconds)
                     throw new InvalidOperationException(FormattableString.Invariant($"Soak underperformed: {fps:F2} FPS, {visible}/{rendered} recognized, {lost} blank, reacquired={reacquired}."));
-                Debug.Log(FormattableString.Invariant($"XR_PLAYER_SOAK_OK: {end - start:F2}s; {rendered} renders; {fps:F2} FPS; {visible} faces; {lost} blank frames"));
+                Debug.Log(FormattableString.Invariant($"XR_PLAYER_SOAK_OK: {stats.LongestCleanSeconds:F2}s continuous clean; {rendered} renders; {fps:F2} FPS; {visible} faces; {lost} blank frames"));
             }
             finally
             {
@@ -668,11 +1155,11 @@ namespace XReality
             }
         }
 
-        static int ChangedFacePixels(Color32[] baseline, Color32[] pose)
+        static int ChangedFacePixels(Color32[] baseline, Color32[] pose, int minX = 470, int maxX = 810, int minY = 255, int maxY = 575)
         {
             int changed = 0;
-            for (int y = 255; y < 575; y++)
-                for (int x = 470; x < 810; x++)
+            for (int y = minY; y < maxY; y++)
+                for (int x = minX; x < maxX; x++)
                 {
                     int i = y * OffscreenFrame.Width + x;
                     var a = baseline[i];

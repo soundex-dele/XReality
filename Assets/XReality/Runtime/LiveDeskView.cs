@@ -20,10 +20,13 @@ namespace XReality
         readonly Font font;
         readonly RectTransform panel;
         readonly GameObject eventRoot;
-        readonly Text status, device, section, notice;
+        readonly Text status, device, section, notice, downloadTitle;
         readonly Button download, browser, folder, refresh, cancel, cycle, enable, calibrate, stop, report, clean, home;
         readonly List<Button> navigation = new List<Button>();
 
+        internal string DeviceLabel => device.text;
+        internal string StatusLabel => status.text;
+        internal string DownloadTitle => downloadTitle.text;
         internal bool OffersDownload => download.gameObject.activeInHierarchy && download.interactable;
         internal bool OffersCancel => cancel.gameObject.activeInHierarchy && cancel.interactable;
         internal void ClickDownload() { if (OffersDownload) download.onClick.Invoke(); }
@@ -70,20 +73,21 @@ namespace XReality
             section = Label(panel, "", 22, 288, 308, 24, 15, Muted, FontStyle.Bold);
 
             download = Control("从 Google 下载模型", 22, 323, 308, startDownload, true);
+            downloadTitle = download.GetComponentInChildren<Text>(true);
             browser = Control("浏览器下载", 22, 374, 149, openDownload);
             folder = Control("打开模型目录", 181, 374, 149, openFolder);
             refresh = Control("检查手动安装的模型", 22, 425, 308, refreshModel);
             cancel = Control("取消下载", 22, 323, 308, cancelDownload);
             cycle = Control("切换 / 刷新设备", 22, 323, 308, cycleDevice);
             enable = Control("启用摄像头", 22, 374, 149, enableCamera, true);
-            stop = Control("关闭摄像头", 181, 374, 149, stopCamera);
+            stop = Control("关闭摄像头 · F9", 181, 374, 149, stopCamera);
             calibrate = Control("正视镜头 · 校准", 22, 425, 308, calibrateFace);
             report = Control("导出本次性能报告", 22, 476, 308, exportReport);
             notice = Label(panel, "", 22, 476, 308, 49, 15, Muted);
             ImageAt(panel, "Footer rule", 22, 535, 308, 1, Card);
             clean = Control("进入纯绿幕 · F8", 22, 551, 308, cleanOutput);
             home = Control("返回首页", 22, 603, 308, goHome);
-            Label(panel, "Esc 退出纯绿幕 · Tab 切换控件", 22, 648, 308, 15, 12, Muted);
+            Label(panel, "Esc 退出绿幕 · F9 关闭相机 · Tab 切换", 22, 648, 308, 15, 12, Muted);
             Canvas.preWillRenderCanvases += Fit;
             Fit();
         }
@@ -96,12 +100,13 @@ namespace XReality
             if (!Mathf.Approximately(canvas.scaleFactor, scale)) canvas.scaleFactor = scale;
         }
 
-        internal void Update(bool ready, bool busy, string message, string deviceName,
+        internal void Update(bool ready, bool busy, bool canResume, string message, string deviceName,
             bool active, bool canStart, bool canCalibrate, bool canReport, string exportMessage)
         {
             Set(status, message);
-            Set(device, ready ? deviceName : "首次设置 · 下载后可离线使用");
+            Set(device, ready ? deviceName : "模型设置 · 安装后可离线使用");
             Set(section, ready ? "摄像头控制" : busy ? "模型下载" : "首次设置");
+            Set(downloadTitle, canResume ? "继续下载模型" : "从 Google 下载模型");
             Show(download, !ready && !busy);
             Show(browser, !ready && !busy);
             Show(folder, !ready && !busy);
@@ -114,7 +119,8 @@ namespace XReality
             Show(report, ready && canReport && string.IsNullOrEmpty(exportMessage));
             string details = exportMessage;
             if (!ready)
-                details = busy ? "可取消；下载完成后会校验本地文件。" : "手动安装后，点击「检查手动安装的模型」。";
+                details = busy ? "可取消；下载完成后会校验本地文件。" : canResume
+                    ? "返回首页会清除本次临时下载。" : "手动安装后，点击「检查手动安装的模型」。";
             else if (string.IsNullOrEmpty(details) && !canReport && !active)
                 details = canStart ? "启用后，请正视镜头完成校准。" : "连接摄像头后，点击「切换 / 刷新设备」。";
             Set(notice, details);

@@ -3,8 +3,10 @@ XReality third-party asset provenance
 Native plugin and managed wrapper: homuler/MediaPipeUnityPlugin v0.16.3 (MIT wrapper; dependencies have their own licenses). The accompanying MIT and third-party notices are copied verbatim from the pinned release.
 https://github.com/homuler/MediaPipeUnityPlugin/releases/tag/v0.16.3
 
-Optional download from Google selected by the user, not bundled or mirrored by XReality:
-Unmodified Google MediaPipe Face Landmarker task (float16/1):
+Bundled, unmodified Google MediaPipe Face Landmarker task (float16/1), published under the Apache License, Version 2.0. See FaceLandmarker-Apache-2.0.txt.
+Google MediaPipe model publisher and model license: https://huggingface.co/mediapipe/face_landmarker/blob/dc1da6e82d88181a44a6c02a4632df1a592ff9fe/README.md
+Identical binary (SHA-256 below): https://huggingface.co/mediapipe/face_landmarker/blob/dc1da6e82d88181a44a6c02a4632df1a592ff9fe/float16/latest/face_landmarker.task
+Google Cloud Storage source and optional repair download:
 https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task
 SHA256 64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff
 Official model overview: https://ai.google.dev/edge/mediapipe/solutions/vision/face_landmarker
@@ -12,6 +14,20 @@ Component model cards:
 https://storage.googleapis.com/mediapipe-assets/MediaPipe%20BlazeFace%20Model%20Card%20(Short%20Range).pdf
 https://storage.googleapis.com/mediapipe-assets/Model%20Card%20MediaPipe%20Face%20Mesh%20V2.pdf
 https://storage.googleapis.com/mediapipe-assets/Model%20Card%20Blendshape%20V2.pdf
-Consult the upstream model terms before using or redistributing the separate downloaded model. No upstream endorsement implied.
+The QA portrait is not distributed. No upstream endorsement implied.
 
-The procedural character meshes, room, animations, materials and sound are created by the project's own code; no marketplace avatar or third-party character likeness is used.
+The procedural cat meshes, room, cat animations and sound are created by the project. No identifiable third-party likeness is used.
+
+Generic realist presenter (2026-11-25): derived artwork only; does not represent an identified person.
+- MakeHuman / MPFB Team, CC0 1.0 Universal; see MakeHuman-CC0-1.0.txt.
+- MPFB data: base.obj, asian-male-young target and Asian expression units for
+  eyelid closure, mouth opening, smile and eyebrow elevation (MPFB 2.0.18 upstream snapshot
+  mpfb2-20261122.zip, SHA-256 e8103012013c829f6c9a0972b7ccd0a2f56b0596aa6f717d535e0bea79cd8910).
+  Source: https://files.makehumancommunity.org/plugins/mpfb2-20261122.zip
+  Asset license declaration: https://github.com/makehumancommunity/mpfb2/blob/master/LICENSE.md
+- MakeHuman System Assets CC0 pack: young_asian_male skin, male_elegantsuit01,
+  short02 hair, eyebrow005, low-poly eyes with brown texture, and teeth_base.
+  SHA-256 b542127a8e25547c7c29c19f2d1d2adb9a664c80396ecd694095dbc8028a0107.
+  Source: https://static.makehumancommunity.org/assets/assetpacks/makehuman_system_assets.html
+- XReality fits, crops, triangulates, skins and binds these assets in editor tooling.
+  Neither MakeHuman nor MPFB program code is included in XReality.

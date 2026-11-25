@@ -14,8 +14,8 @@ namespace XReality.Editor
 {
     public static class StudioProject
     {
-        const string Version = "0.3.20";
-        internal const string Dir = "Assets/XReality/Generated/StorybookV10";
+        const string Version = "0.3.35";
+        internal const string Dir = "Assets/XReality/Generated/StorybookV19";
         static readonly string[] Names =
         {
             "Home",

@@ -45,13 +45,31 @@ namespace XReality
             float normSquared = Quaternion.Dot(candidate.rotation, candidate.rotation);
             if (!Finite(normSquared) || normSquared < .01f) return false;
             candidate.rotation = candidate.rotation.normalized;
+            float innerBrow = 0, funnel = 0, leftPress = 0, rightPress = 0;
             foreach (var category in result.faceBlendshapes[0].categories)
             {
                 switch (category.categoryName)
                 {
                     case "eyeBlinkLeft": candidate.left = category.score; break;
                     case "eyeBlinkRight": candidate.right = category.score; break;
+                    case "eyeLookInLeft": candidate.gazeLeft.x += Score(category.score); break;
+                    case "eyeLookOutLeft": candidate.gazeLeft.x -= Score(category.score); break;
+                    case "eyeLookOutRight": candidate.gazeRight.x += Score(category.score); break;
+                    case "eyeLookInRight": candidate.gazeRight.x -= Score(category.score); break;
+                    case "eyeLookUpLeft": candidate.gazeLeft.y += Score(category.score); break;
+                    case "eyeLookDownLeft": candidate.gazeLeft.y -= Score(category.score); break;
+                    case "eyeLookUpRight": candidate.gazeRight.y += Score(category.score); break;
+                    case "eyeLookDownRight": candidate.gazeRight.y -= Score(category.score); break;
                     case "jawOpen": candidate.jaw = category.score; break;
+                    case "mouthFunnel": funnel = Score(category.score); break;
+                    case "mouthPucker": candidate.lipRound = Score(category.score); break;
+                    case "mouthPressLeft": leftPress = Score(category.score); break;
+                    case "mouthPressRight": rightPress = Score(category.score); break;
+                    case "mouthSmileLeft": candidate.smileLeft = category.score; break;
+                    case "mouthSmileRight": candidate.smileRight = category.score; break;
+                    case "browInnerUp": innerBrow = Score(category.score); break;
+                    case "browOuterUpLeft": candidate.browLeft = category.score; break;
+                    case "browOuterUpRight": candidate.browRight = category.score; break;
                 }
             }
             // Invalid native output must not feed NaN into the avatar's persistent smoothing state.
@@ -59,10 +77,17 @@ namespace XReality
             candidate.left = Mathf.Clamp01(candidate.left);
             candidate.right = Mathf.Clamp01(candidate.right);
             candidate.jaw = Mathf.Clamp01(candidate.jaw);
+            candidate.lipRound = Mathf.Max(candidate.lipRound, funnel * .9f);
+            candidate.lipPress = (leftPress + rightPress) * .5f;
+            candidate.smileLeft = Score(candidate.smileLeft);
+            candidate.smileRight = Score(candidate.smileRight);
+            candidate.browLeft = Mathf.Max(innerBrow * .72f, Score(candidate.browLeft));
+            candidate.browRight = Mathf.Max(innerBrow * .72f, Score(candidate.browRight));
             pose = candidate;
             return true;
         }
 
+        static float Score(float value) => Finite(value) ? Mathf.Clamp01(value) : 0;
         static bool Finite(float value) => !float.IsNaN(value) && !float.IsInfinity(value);
 
         public void Dispose()

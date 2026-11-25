@@ -43,16 +43,33 @@ namespace XReality.Editor
                 camera.transform.position = new Vector3(stage.torso.position.x, position.y, position.z);
                 camera.backgroundColor = Color.green;
                 var neutral = Expression(camera, stage, "LiveNeutral", 0, 0, 0);
-                CheckBlink(neutral, Expression(camera, stage, "LiveBlinkHalf", 55, 0, 0), 685, 595, "left halfway");
-                CheckBlink(neutral, Expression(camera, stage, "LiveBlinkLeft", 100, 0, 0), 685, 595, "left");
-                CheckBlink(neutral, Expression(camera, stage, "LiveBlinkRight", 0, 100, 0), 595, 685, "right");
+                CheckBlink(neutral, Expression(camera, stage, "LiveBlinkHalf", 55, 0, 0), 691, 589, "left halfway");
+                CheckBlink(neutral, Expression(camera, stage, "LiveBlinkLeft", 100, 0, 0), 691, 589, "left");
+                CheckBlink(neutral, Expression(camera, stage, "LiveBlinkRight", 0, 100, 0), 589, 691, "right");
                 int mouthDiff = Changes(neutral, Expression(camera, stage, "LiveJawOpen", 0, 0, 100),
-                    new RectInt(600, 309, 80, 30));
+                    new RectInt(603, 319, 74, 63));
                 if (mouthDiff < 350)
                     throw new InvalidOperationException("Jaw fixture did not visibly change the mouth region.");
                 Debug.Log($"XR_OFFSCREEN_JAW: {mouthDiff} changed mouth pixels");
+                var smile = Expression(camera, stage, "LiveSmile", 0, 0, 0, 100, 100);
+                var oneSmile = Expression(camera, stage, "LiveSmileLeft", 0, 0, 0, 100);
+                var brow = Expression(camera, stage, "LiveBrowRight", 0, 0, 0, 0, 0, 0, 100);
+                var mouthLeft = new RectInt(654, 295, 72, 73);
+                var mouthRight = new RectInt(554, 295, 72, 73);
+                var browRight = new RectInt(557, 456, 70, 51);
+                var browLeft = new RectInt(653, 456, 70, 51);
+                int smileLeft = Changes(neutral, smile, mouthLeft), smileRight = Changes(neutral, smile, mouthRight);
+                int onlyLeft = Changes(neutral, oneSmile, mouthLeft), crossSmile = Changes(neutral, oneSmile, mouthRight);
+                int raised = Changes(neutral, brow, browRight), crossBrow = Changes(neutral, brow, browLeft);
+                if (smileLeft < 120 || smileRight < 120 || onlyLeft < 120 || crossSmile > onlyLeft / 3 ||
+                    raised < 100 || crossBrow > raised / 3)
+                    throw new InvalidOperationException($"Smile or brow pixels: smile {smileLeft}/{smileRight}, unilateral {onlyLeft}/{crossSmile}, brow {raised}/{crossBrow}");
+                Debug.Log($"XR_OFFSCREEN_EXPRESSIONS: smile {smileLeft}/{smileRight}; unilateral {onlyLeft}/{crossSmile}; brow {raised}/{crossBrow}");
                 stage.head.localRotation = Quaternion.Euler(3, 16, -4);
-                Expression(camera, stage, "LiveOutput", 100, 0, 98);
+                var turned = Expression(camera, stage, "LiveOutput", 100, 0, 98);
+                int movement = Changes(neutral, turned, new RectInt(480, 260, 320, 310));
+                if (movement < 3500) throw new InvalidOperationException($"Presenter turn did not move the head ({movement} pixels).");
+                Debug.Log($"XR_OFFSCREEN_TURN: {movement} changed head pixels");
             }
             Debug.Log("XR_OFFSCREEN_OK");
         }
@@ -99,14 +116,15 @@ namespace XReality.Editor
 
         // Batch mode does not tick play-mode skinning. Bake the authored renderer at the
         // requested weights and render that exact geometry with the same material/transform.
-        static Color32[] Expression(Camera camera, LiveStudio stage, string name, float left, float right, float jaw)
+        static Color32[] Expression(Camera camera, LiveStudio stage, string name, float left, float right, float jaw,
+            float smileLeft = 0, float smileRight = 0, float browLeft = 0, float browRight = 0)
         {
-            var sources = new[] { stage.leftLid, stage.rightLid, stage.lip, stage.faceSurface };
+            var sources = new[] { stage.faceSurface, stage.teeth, stage.brows };
             var meshes = new Mesh[sources.Length];
             var copies = new GameObject[sources.Length];
             try
             {
-                stage.ApplyExpressions(left / 100, right / 100, jaw / 100);
+                stage.ApplyExpressions(left / 100, right / 100, jaw / 100, smileLeft / 100, smileRight / 100, browLeft / 100, browRight / 100);
                 for (int i = 0; i < sources.Length; i++)
                 {
                     var source = sources[i];
@@ -139,9 +157,9 @@ namespace XReality.Editor
         // re-evaluate them against the neutral capture rather than weakening the thresholds.
         static void CheckBlink(Color32[] neutral, Color32[] expression, int targetX, int otherX, string side)
         {
-            int target = Changes(neutral, expression, new RectInt(targetX - 24, 385, 48, 40));
-            int other = Changes(neutral, expression, new RectInt(otherX - 24, 385, 48, 40));
-            if (target < 300 || other > 25)
+            int target = Changes(neutral, expression, new RectInt(targetX - 25, 424, 50, 42));
+            int other = Changes(neutral, expression, new RectInt(otherX - 25, 424, 50, 42));
+            if (target < 120 || other > 40)
                 throw new InvalidOperationException($"Unexpected {side} blink pixels: target {target}, other {other}.");
             Debug.Log($"XR_OFFSCREEN_BLINK: {side}; target {target}, other {other}");
         }

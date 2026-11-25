@@ -22,14 +22,14 @@ namespace XReality
             finally { RenderTexture.ReleaseTemporary(rt); }
         }
 
-        internal static void Render(Camera camera, RenderTexture rt)
+        internal static void Render(Camera camera, RenderTexture rt, bool rebuildCanvas = true)
         {
             var previous = RenderTexture.active;
             var previousTarget = camera.targetTexture;
             try
             {
                 camera.targetTexture = rt;
-                Canvas.ForceUpdateCanvases();
+                if (rebuildCanvas) Canvas.ForceUpdateCanvases();
                 var request = new UniversalRenderPipeline.SingleCameraRequest { destination = rt };
                 if (!RenderPipeline.SupportsRenderRequest(camera, request))
                     throw new InvalidOperationException("URP rejected the offscreen render request.");

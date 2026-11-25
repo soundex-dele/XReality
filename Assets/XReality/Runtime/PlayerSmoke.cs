@@ -138,11 +138,12 @@ namespace XReality
                 }
 
                 if (live)
-                    Require(!live.capture.Active && live.leftLid && live.rightLid && live.lip && live.faceSurface && live.head, "Avatar bindings or camera privacy");
+                    Require(!live.capture.Active && live.faceSurface && live.teeth && live.brows && live.head, "Avatar bindings or camera privacy");
                 if (live)
                 {
                     live.ApplyExpressions(1,0,.8f);
-                    Require(live.leftLid.GetBlendShapeWeight(0)==100 && live.rightLid.GetBlendShapeWeight(0)==0 && live.lip.GetBlendShapeWeight(0)>75,"Independent expressions");
+                    Require(live.faceSurface.GetBlendShapeWeight(0)==100 && live.faceSurface.GetBlendShapeWeight(1)==0 &&
+                        live.faceSurface.GetBlendShapeWeight(2)>75 && live.teeth.GetBlendShapeWeight(0)>75,"Independent expressions");
                     live.ApplyExpressions(0,0,0);
                 }
                 if(pet)

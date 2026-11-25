@@ -18,20 +18,46 @@ namespace XReality
         internal static string QaCacheFolder;
         internal static string CacheFolder => QaCacheFolder ?? Path.Combine(Application.persistentDataPath, "Models");
         internal static string CachePath => Path.Combine(CacheFolder, FileName);
+        static string BundledPath => Path.Combine(Application.streamingAssetsPath, "Models", FileName);
 
         internal const string Retrying = "网络中断，正在自动重试（2/2）…";
         internal const string RetryExhausted = "网络不稳定，重试后仍未完成。可用浏览器下载。";
+        internal const string WaitingToResume = "网络中断，可继续下载或改用浏览器。";
         internal const string Resuming = "网络中断，正在续传（2/2）…";
         const int Attempts = 2;
         int qaTransientFailures;
-        bool qaInterrupt;
+        int qaInterruptAttempt;
         internal bool QaResumeUsed { get; private set; }
+        int qaLoopbackPort;
+        string qaLoopbackFingerprint;
 
-        internal void ArmQaResume()
+        internal void ConfigureQaLoopback(int port, string fingerprint)
         {
-            if (!Application.isBatchMode || QaCacheFolder == null || Busy)
+            if (!Application.isBatchMode || QaCacheFolder == null || Busy || port < 1024 || port > 65535 ||
+                string.IsNullOrEmpty(fingerprint) || fingerprint.Length != 64 || !Array.TrueForAll(fingerprint.ToCharArray(), Uri.IsHexDigit))
+                throw new InvalidOperationException("Loopback overrides are restricted to isolated batch QA.");
+            qaLoopbackPort = port;
+            qaLoopbackFingerprint = fingerprint;
+        }
+
+        sealed class QaLoopbackCertificate : CertificateHandler
+        {
+            readonly string fingerprint;
+            internal QaLoopbackCertificate(string fingerprint) => this.fingerprint = fingerprint;
+            protected override bool ValidateCertificate(byte[] certificateData)
+            {
+                using var sha = SHA256.Create();
+                return string.Equals(BitConverter.ToString(sha.ComputeHash(certificateData)).Replace("-", ""),
+                    fingerprint, StringComparison.OrdinalIgnoreCase);
+            }
+        }
+
+
+        internal void ArmQaResume(int attempt = 1)
+        {
+            if (!Application.isBatchMode || QaCacheFolder == null || Busy || attempt < 1 || attempt > Attempts)
                 throw new InvalidOperationException("An interruption can only be armed in idle, isolated batch QA.");
-            qaInterrupt = true;
+            qaInterruptAttempt = attempt;
             QaResumeUsed = false;
         }
         internal int QaAttempts { get; private set; }
@@ -51,6 +77,7 @@ namespace XReality
         long resumeOffset;
         internal bool Ready { get; private set; }
         internal bool Busy => operation != null;
+        internal bool CanResume => !Busy && resumeOffset > 0;
         internal string Status { get; private set; }
         internal float Progress => Mathf.Clamp01((float)(request == null ? (ulong)resumeOffset :
             request.downloadedBytes + (request.responseCode == 200 ? 0 : (ulong)resumeOffset)) / Bytes);
@@ -60,20 +87,43 @@ namespace XReality
             if (Busy) return;
             try
             {
-                ReadVerified(CachePath);
+                ReadForCapture(out bool bundled);
+                ClearTransfer();
                 Ready = true;
-                Status = "面捕模型已就绪 · 可离线使用";
+                Status = bundled ? "内置面捕模型已就绪 · 可离线使用" : "面捕模型已就绪 · 可离线使用";
             }
             catch (FileNotFoundException)
             {
                 Ready = false;
-                Status = FirstUse;
+                Status = CanResume ? WaitingToResume : FirstUse;
             }
             catch (Exception e) when (e is IOException || e is UnauthorizedAccessException || e is InvalidDataException)
             {
                 Ready = false;
-                Status = "无法读取或校验模型，请重新下载。";
+                Status = CanResume ? WaitingToResume : "无法读取或校验模型，请重新下载。";
             }
+        }
+
+        internal static byte[] ReadForCapture(out bool bundled)
+        {
+            bundled = false;
+            // Isolated test caches exercise repair paths without modifying the package.
+            if (QaCacheFolder == null)
+            {
+                try
+                {
+                    var bytes = ReadVerified(BundledPath);
+                    bundled = true;
+                    return bytes;
+                }
+                catch (FileNotFoundException) { }
+                catch (Exception e) when (e is IOException || e is InvalidDataException || e is UnauthorizedAccessException)
+                {
+                    // A damaged installation can still use a valid downloaded model.
+                    if (!File.Exists(CachePath)) throw;
+                }
+            }
+            return ReadVerified(CachePath);
         }
 
         internal static byte[] ReadVerified(string path)
@@ -90,7 +140,7 @@ namespace XReality
         internal void BeginDownload()
         {
             if (Busy) return;
-            Status = "正在从 Google 下载模型…";
+            Status = CanResume ? "正在继续下载模型…" : "正在从 Google 下载模型…";
             operation = StartCoroutine(Receive());
         }
 
@@ -101,12 +151,15 @@ namespace XReality
             {
                 Directory.CreateDirectory(CacheFolder);
                 temporary = Path.Combine(CacheFolder, Guid.NewGuid().ToString("N") + ".partial");
-                request = new UnityWebRequest(DownloadUrl, UnityWebRequest.kHttpVerbGET)
+                bool loopback = qaLoopbackPort != 0 && Application.isBatchMode && QaCacheFolder != null;
+                string endpoint = loopback ? $"https://127.0.0.1:{qaLoopbackPort}/model" : DownloadUrl;
+                request = new UnityWebRequest(endpoint, UnityWebRequest.kHttpVerbGET)
                 {
                     timeout = ModelTransferBudget.AttemptSeconds,
                     redirectLimit = 0,
                     downloadHandler = new DownloadHandlerFile(temporary) { removeFileOnAbort = false }
                 };
+                if (loopback) request.certificateHandler = new QaLoopbackCertificate(qaLoopbackFingerprint);
                 if (resumeOffset > 0) request.SetRequestHeader("Range", "bytes=" + Number(resumeOffset) + "-");
                 download = request.SendWebRequest();
                 return true;
@@ -123,6 +176,7 @@ namespace XReality
         {
             // Assign the Coroutine handle before reaching any path that clears it.
             yield return null;
+            bool keepPrefix = false;
             try
             {
                 for (int attempt = 1; attempt <= Attempts; attempt++)
@@ -144,10 +198,10 @@ namespace XReality
                         var budget = new ModelTransferBudget(Time.realtimeSinceStartupAsDouble);
                         while (!download.isDone && !Oversize(request.responseCode, request.downloadedBytes))
                         {
-                            if (qaInterrupt && attempt == 1 && request.responseCode == 200 &&
+                            if (qaInterruptAttempt == attempt && request.responseCode == 200 &&
                                 request.downloadedBytes >= 384 * 1024 && request.downloadedBytes < Bytes)
                             {
-                                qaInterrupt = false;
+                                qaInterruptAttempt = 0;
                                 interrupted = true;
                                 Debug.Log("XR_QA_DOWNLOAD_FAULT: interrupted a live partial response");
                                 break;
@@ -179,13 +233,15 @@ namespace XReality
                     Debug.LogWarning($"Model download attempt {attempt}/{Attempts}: {result}; HTTP {http}; bytes {received}; offset {resumeOffset}; progress budget expired {timedOut}; oversize {tooLarge}");
                     bool transient = result == UnityWebRequest.Result.ConnectionError ||
                         http == 408 || http == 429 || (http >= 500 && http <= 599);
+                    if (!tooLarge && transient && http == 200) RetainPrefix();
+                    if (!tooLarge && transient && http == 206 && IsExactRange(range, resumeOffset)) RetainSuffix();
                     if (tooLarge || !transient || attempt == Attempts)
                     {
-                        Status = tooLarge ? "下载文件大小异常，未安装。" :
+                        keepPrefix = !tooLarge && transient && resumeOffset > 0;
+                        Status = keepPrefix ? WaitingToResume : tooLarge ? "下载文件大小异常，未安装。" :
                             transient ? RetryExhausted : "下载未完成，可用浏览器下载或手动安装。";
                         yield break;
                     }
-                    if (http == 200) RetainPrefix();
                     ClearAttempt();
                     Status = resumeOffset > 0 ? Resuming : Retrying;
                     yield return new WaitForSecondsRealtime(1.2f);
@@ -193,7 +249,9 @@ namespace XReality
             }
             finally
             {
-                ClearTransfer();
+                if (keepPrefix) ClearAttempt();
+                else ClearTransfer();
+                qaInterruptAttempt = 0;
                 operation = null;
             }
         }
@@ -210,7 +268,8 @@ namespace XReality
             try
             {
                 long length = new FileInfo(temporary).Length;
-                if (length <= 0 || length >= Bytes) return;
+                if (length <= resumeOffset || length >= Bytes) return;
+                RemovePartial(ref prefix);
                 prefix = temporary;
                 temporary = null;
                 resumeOffset = length;
@@ -219,6 +278,29 @@ namespace XReality
             catch (Exception e) when (e is IOException || e is UnauthorizedAccessException)
             {
                 Debug.LogWarning("Model download could not retain a partial file: " + e.GetType().Name);
+            }
+        }
+
+        void RetainSuffix()
+        {
+            try
+            {
+                if (temporary == null || prefix == null) return;
+                using var head = new FileStream(prefix, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+                using var tail = new FileStream(temporary, FileMode.Open, FileAccess.Read, FileShare.None);
+                long next = resumeOffset + tail.Length;
+                if (head.Length != resumeOffset || tail.Length == 0 || next >= Bytes) return;
+                head.Position = resumeOffset;
+                tail.CopyTo(head);
+                resumeOffset = next;
+                Debug.Log($"Model download retained {next} bytes after an interrupted range");
+            }
+            catch (Exception e) when (e is IOException || e is UnauthorizedAccessException)
+            {
+                // A partial append must never be advertised as a known offset.
+                RemovePartial(ref prefix);
+                resumeOffset = 0;
+                Debug.LogWarning("Model download could not extend the partial file: " + e.GetType().Name);
             }
         }
 
@@ -259,8 +341,8 @@ namespace XReality
 
         internal void Cancel()
         {
-            if (operation == null) return;
-            StopCoroutine(operation);
+            if (operation == null && resumeOffset == 0) return;
+            if (operation != null) StopCoroutine(operation);
             operation = null;
             ClearTransfer();
             Status = "已取消下载，可随时重试。";
@@ -293,7 +375,7 @@ namespace XReality
             ClearAttempt();
             RemovePartial(ref prefix);
             resumeOffset = 0;
-            qaInterrupt = false;
+            qaInterruptAttempt = 0;
         }
         void OnDisable() => Cancel();
     }

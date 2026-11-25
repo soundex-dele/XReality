@@ -14,6 +14,8 @@ namespace XReality
         string catName, draft;
         int bond;
         bool dragging;
+        Vector3 toyGrabOffset;
+        static readonly Plane ToyPlane = new Plane(Vector3.up, new Vector3(0, .23f, 0));
         bool visitPlanned;
         Vector3? visitTarget;
         PlayMemory memory;
@@ -76,18 +78,41 @@ namespace XReality
         void PollPointer()
         {
             var ray = roomCamera.ScreenPointToRay(Input.mousePosition);
-            if (!OverPanel && Input.GetMouseButtonDown(0) && Physics.Raycast(ray, out var hit))
+            HandlePointer(ray, Input.GetMouseButtonDown(0), Input.GetMouseButton(0),
+                Input.GetMouseButtonUp(0), OverPanel);
+        }
+
+        // Ray and mouse flags are separate from polling so the same world interaction can be exercised offscreen.
+        internal void HandlePointer(Ray ray, bool pressed, bool held, bool released, bool blocked)
+        {
+            if (!blocked && pressed && Physics.Raycast(ray, out var hit))
             {
-                if (hit.transform == toy || hit.transform.IsChildOf(toy))
+                if ((hit.transform == toy || hit.transform.IsChildOf(toy)) && ToyPlane.Raycast(ray, out float start))
+                {
+                    toyGrabOffset = toy.position - ray.GetPoint(start);
                     dragging = true;
+                }
                 else if (hit.transform == cat || hit.transform.IsChildOf(cat))
                     Stroke();
             }
 
-            if (Input.GetMouseButtonUp(0) || !Input.GetMouseButton(0))
+            // Do not move a toy merely by selecting it. Keep the grabbed point under the cursor.
+            if (dragging && !blocked && !pressed && (held || released) && ToyPlane.Raycast(ray, out float distance))
+            {
+                var next = ray.GetPoint(distance) + toyGrabOffset;
+                next.x = Mathf.Clamp(next.x, -.8f, 3.0f);
+                next.y = .23f;
+                next.z = Mathf.Clamp(next.z, -1.1f, 1.3f);
+                if ((next - toy.position).sqrMagnitude > .000001f)
+                    MoveToy(next);
+            }
+            if (released || !held)
                 dragging = false;
-            if (dragging && !OverPanel && new Plane(Vector3.up, new Vector3(0, .23f, 0)).Raycast(ray, out var d))
-                MoveToy(ray.GetPoint(d));
+        }
+
+        void OnApplicationFocus(bool focused)
+        {
+            if (!focused) dragging = false;
         }
 
         void Update()

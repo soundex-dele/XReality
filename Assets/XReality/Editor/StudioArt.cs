@@ -4,7 +4,7 @@ using UnityEngine.Rendering;
 
 namespace XReality.Editor
 {
-    // All geometry is authored here and serialized to editable Unity scenes; no runtime avatar import.
+    // Scene geometry and the baked presenter are serialized to editable scenes; no runtime avatar import.
     internal static partial class StudioArt
     {
         const string Fur = "D88857", Cream = "F7DCB3", Dark = "352C3B", Pink = "D89288", Teal = "3D8180", Wood = "A77354", Wall = "D3C2A4", Blue = "577C9B";
@@ -99,11 +99,11 @@ namespace XReality.Editor
             YarnStrands(yarn);
 
             var hostStage = Joint("Avatar preview", display, V(2.16f, 0, .27f));
-            Part("Avatar plinth", hostStage, V(0, .39f, 0), V(1.83f, .35f, 1.74f), "2B686F", PrimitiveType.Cylinder);
-            Part("Avatar plinth rim", hostStage, V(0, .72f, 0), V(1.87f, .045f, 1.78f), "72AEAC", PrimitiveType.Cylinder);
-            var host = Joint("Showcase avatar", hostStage, V(0, .80f, 0));
-            host.localRotation = Quaternion.Euler(0, 10, 0);
-            host.localScale = Vector3.one * .92f;
+            Part("Avatar plinth", hostStage, V(0, .39f, 0), V(2.14f, .35f, 1.74f), "2B686F", PrimitiveType.Cylinder);
+            Part("Avatar plinth rim", hostStage, V(0, .72f, 0), V(2.18f, .045f, 1.78f), "72AEAC", PrimitiveType.Cylinder);
+            var host = Joint("Showcase avatar", hostStage, V(0, .609f, 0));
+            host.localRotation = Quaternion.Euler(0, 6, 0);
+            host.localScale = Vector3.one * .66f;
             Presenter(null, host, Vector3.zero);
 
             // The previews share meshes/materials, not either mode's runtime components or input.
@@ -113,12 +113,17 @@ namespace XReality.Editor
 
         static void Live()
         {
-            var cam = Stage(V(0, 1.65f, -6), V(0, 1.65f, 0), "405768", 1.64f);
+            var cam = Stage(V(0, 1.34f, -6), V(0, 1.34f, 0), "405768", 1.31f);
             var root = Joint("Live desk", null, Vector3.zero);
             var live = root.gameObject.AddComponent<LiveStudio>();
             live.stageCamera = cam;
             live.capture = root.gameObject.AddComponent<FaceCapture>();
-            Presenter(live, root, V(.70f,.14f,0));
+            Presenter(live, root, V(.78f,.08f,0));
+            var fill = new GameObject("Presenter fill").AddComponent<Light>();
+            fill.type = LightType.Directional;
+            fill.intensity = .24f;
+            fill.color = C("C9DDFE");
+            fill.transform.rotation = Quaternion.Euler(10, -36, 0);
         }
 
         static void Pet()

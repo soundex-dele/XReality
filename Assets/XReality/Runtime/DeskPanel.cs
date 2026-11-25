@@ -6,6 +6,7 @@ namespace XReality
     // One compact panel per scene. The capture scene suppresses it entirely in clean mode.
     public abstract class DeskPanel : MonoBehaviour
     {
+        internal const int DefaultFrameRate = 30;
         protected const float Width = 302;
         protected float Scale => Mathf.Max(.1f, Mathf.Min(Screen.width / 1050f, Screen.height / 735f));
         protected bool OverPanel => Input.mousePosition.x < (Width + 30) * Scale;
@@ -16,7 +17,7 @@ namespace XReality
         protected virtual void Awake()
         {
             Application.runInBackground = true;
-            Application.targetFrameRate = 30;
+            Application.targetFrameRate = DefaultFrameRate;
             QualitySettings.vSyncCount = 0;
             AudioListener.volume = PlayerPrefs.GetFloat("xr.volume", .65f);
         }
