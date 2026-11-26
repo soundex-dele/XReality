@@ -27,3 +27,19 @@ $dir = 'D:\workspace\XReality\Builds\GaussianAvatars-306'
 - Player 加 `-batchmode --xr-offscreen <截图目录> --xr-offline-tracking <已验证模型> <已验证本地图像>`，再传入正常的 `306` 启动参数。检查 `XR_GA_306_LIVE_QA_OK`、`XR_GA_306_INFERENCE_OK` 和 `XR_PLAYER_OFFSCREEN_OK`。测试不打开摄像头，不输出原始测试人像。
 
 该原型把左右眨眼、下颌和合并后的双侧微笑重定向到四个变形通道，并把已平滑、限幅的头姿作用到颈部以上。暂未做独立视线、眉毛或圆唇/抿嘴映射。肩部及衣领下缘的白边仍然存在；实体摄像头及 OBS 的 1080p/30 fps、音画同步和 30 分钟长测尚未验证。
+
+## 从 nndeploy-flow 导入自己训练的 XRG v2
+
+`platform.TrainGaussianAvatar` 的完整 `.xrg` 可使用同一播放器入口：
+
+```powershell
+& 'D:\path\to\XReality.exe' -force-d3d11 -avatar-ga306 -ga306-asset 'D:\path\to\avatar.xrg'
+```
+
+先用当前源码重建 **XReality.Editor.Gaussian306Build.Windows**（注意：旧构建无法打开 v2）。视频输入、版本、环境配置和训练约束见 nndeploy-flow 的 `docs/gaussian-avatar-training.md`。`export-avatar.py` 接受本地可信的网格绑定训练快照（`point_cloud.ply` 和 `flame_param.npz`），按指定中性、左闭眼、右闭眼、微笑帧生成 v2；不要向它传入网上下载的任意 pickle 或未授权模型。头颈位姿在导出时中性化，Unity 使用新角色的颈部枢轴施加实时头姿。它仍是 D3D11 非商用研究预览，不用于分发真人资产。
+
+### XRG v2 与无素材测试
+
+文件为小端布局：`306L` 魔数、版本 `2`、高斯点/顶点/三角形数量（均为 32 位整数）、三个 32 位浮点颈部枢轴坐标。后续沿用 v1 的布局：中性顶点、头姿权重、左眼/右眼/下颌/微笑顶点差分、三角形索引、逐高斯绑定索引、各向异性几何和 16 组球谐颜色。播放端上限为 200,000 高斯、20,000 顶点、40,000 三角形；旧 v1 仍固定为 306 的网格与点数。
+
+测试不需要下载 FLAME 或人物模型。使用 Unity `-batchmode -quit -force-d3d11 -executeMethod XReality.GaussianAvatarImportQA.Run`，检查 `XR_XRG_V2_QA_OK` 和 `Builds/QA-XRG-Import/` 截图。仅在本机已有 `Live306.xrg` 时额外检查 `XR_XRG_LEGACY_QA_OK`。测试结果仅说明资产解析、渲染、变形、绿幕和回退正常，不代表真人视频已训练成功。

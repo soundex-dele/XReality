@@ -20,12 +20,13 @@ namespace XReality
         FaceModel model;
         LiveDeskView view;
         bool clean;
-        string reportMessage;
+        string reportMessage, propMessage;
         Vector3 bodyBase, camBase;
         float l, r, j, sl, sr, bl, br, round, press;
         internal FacePose? TestPose;
         GaussianPresenter gaussian;
         Gaussian306Live gaussian306;
+        StaticGaussianProp staticProp;
         internal const string GaussianFlag = "-avatar-3dgs";
         void Start()
         {
@@ -34,6 +35,18 @@ namespace XReality
             if (Gaussian306Live.Requested(args)) Start306(args);
             else if (Array.Exists(args, arg => string.Equals(arg, GaussianFlag, StringComparison.OrdinalIgnoreCase)))
                 StartGaussianPresenter();
+            int propArg = Array.FindIndex(args, arg => string.Equals(arg, StaticGaussianProp.Flag, StringComparison.OrdinalIgnoreCase));
+            if (propArg >= 0)
+            {
+                if (StaticGaussianProp.TryLoad(propArg + 1 < args.Length ? args[propArg + 1] : null,
+                    stageCamera, torso.gameObject.layer, out staticProp))
+                    propMessage = "3DGS 道具：J/L 旋转 · I/K 缩放 · U 复位 · O 显隐";
+                else
+                {
+                    propMessage = "未加载 3DGS 道具，请检查文件和 D3D11。";
+                    Debug.LogWarning("XR_XRS_FALLBACK: no valid static prop; keeping the studio and presenter.");
+                }
+            }
             RefreshInstalledModel();
             RefreshDevices(EnumerateDevices);
             ShowDesk(true);
@@ -127,6 +140,13 @@ namespace XReality
         void Update()
         {
             HandleStudioCommands(Input.GetKeyDown(KeyCode.F9), Input.GetKeyDown(KeyCode.F8), Input.GetKeyDown(KeyCode.Escape));
+            if (staticProp != null)
+            {
+                float seconds = Time.unscaledDeltaTime;
+                float yaw = (Input.GetKey(KeyCode.L) ? 1 : 0) - (Input.GetKey(KeyCode.J) ? 1 : 0);
+                float zoom = (Input.GetKey(KeyCode.I) ? 1 : 0) - (Input.GetKey(KeyCode.K) ? 1 : 0);
+                staticProp.Control(80 * seconds * yaw, seconds * zoom, Input.GetKeyDown(KeyCode.U), Input.GetKeyDown(KeyCode.O));
+            }
             if (clean) return;
             if (Input.GetKeyDown(KeyCode.Tab))
                 view?.Tab(Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift));
@@ -153,6 +173,17 @@ namespace XReality
             torso.localPosition = bodyBase + Vector3.up * (.014f * Mathf.Sin(Time.unscaledTime * 1.8f));
             if (gaussian306 != null) Refresh306();
             else RefreshGaussianPresenter();
+            if (staticProp != null)
+            {
+                try { staticProp.Place(); }
+                catch (Exception error)
+                {
+                    staticProp.Dispose();
+                    staticProp = null;
+                    propMessage = "3DGS 道具渲染失败，主播不受影响。";
+                    Debug.LogWarning("XR_XRS_FALLBACK: prop rendering failed: " + error.GetType().Name);
+                }
+            }
         }
 
         internal bool RefreshGaussianPresenter()
@@ -318,7 +349,7 @@ namespace XReality
             if (busy || canResume) status += $" · {Mathf.FloorToInt(model.Progress * 100)}%";
             view?.Update(ready, busy, canResume, status, SelectedDevice ?? "未发现摄像头",
                 capture.Active, !capture.Active && selectedIsUnique, capture.HasFace && !capture.Calibrating,
-                !capture.Active && capture.Metrics.Report != null, reportMessage);
+                !capture.Active && capture.Metrics.Report != null, reportMessage ?? propMessage);
         }
 
         void CycleDevice()
@@ -369,6 +400,7 @@ namespace XReality
 
         protected override void OnDestroy()
         {
+            staticProp?.Dispose();
             gaussian306?.Dispose();
             gaussian?.Dispose();
             view?.Dispose();

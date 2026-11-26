@@ -12,10 +12,12 @@ namespace XReality
     {
         internal const string Flag = "-avatar-ga306";
         const string AssetFlag = "-ga306-asset";
-        const int SplatCount = 89021, VertexCount = 5143, FaceCount = 10144, ChannelCount = 4;
+        const int LegacySplats = 89021, LegacyVertices = 5143, LegacyFaces = 10144, ChannelCount = 4;
+        const int MaxSplats = 200000, MaxVertices = 20000, MaxFaces = 40000;
+        int SplatCount => bindings.Length;
+        int FaceCount => frames.Length;
         const int DepthBuckets = 65536;
-        const int Size = 20 + VertexCount * 64 + FaceCount * 12 + SplatCount * 324;
-        static readonly Vector3 Neck = new Vector3(0, -.081f, -.052f);
+        Vector3 neck = new Vector3(0, -.081f, -.052f);
 
         [StructLayout(LayoutKind.Sequential)]
         struct Frame
@@ -26,15 +28,12 @@ namespace XReality
         readonly Camera stage;
         readonly Renderer[] sources;
         readonly bool[] wasHidden;
-        readonly Vector3[] rest = new Vector3[VertexCount], vertices = new Vector3[VertexCount];
-        readonly float[] influence = new float[VertexCount];
+        Vector3[] rest, vertices, localCenters;
+        float[] influence, depth, faceDepth;
         readonly Vector3[][] deltas = new Vector3[ChannelCount][];
-        readonly int[] triangles = new int[FaceCount * 3], bindings = new int[SplatCount];
-        readonly Vector3[] localCenters = new Vector3[SplatCount];
-        readonly Frame[] frames = new Frame[FaceCount];
-        readonly int[] order = new int[SplatCount];
-        readonly float[] depth = new float[SplatCount];
-        readonly ushort[] depthKeys = new ushort[SplatCount];
+        int[] triangles, bindings, order;
+        Frame[] frames;
+        ushort[] depthKeys;
         readonly int[] depthCounts = new int[DepthBuckets];
         GraphicsBuffer frameBuffer, points, coefficients, bindingBuffer, orderBuffer;
         GameObject node;
@@ -82,37 +81,73 @@ namespace XReality
         {
             using var file = File.OpenRead(path);
             using var reader = new BinaryReader(file);
-            if (file.Length != Size || reader.ReadInt32() != 0x4c363033 || reader.ReadInt32() != 1 ||
-                reader.ReadInt32() != SplatCount || reader.ReadInt32() != VertexCount || reader.ReadInt32() != FaceCount)
-                throw new InvalidDataException("Unsupported local 306 rig.");
-            for (int i = 0; i < rest.Length; i++) rest[i] = ReadVector(reader, 1);
-            for (int i = 0; i < influence.Length; i++) influence[i] = ReadFloat(reader, 0, 1);
-            for (int c = 0; c < ChannelCount; c++)
+            if (reader.ReadInt32() != 0x4c363033)
+                throw new InvalidDataException("Not an XRG avatar.");
+            int version = reader.ReadInt32();
+            int splats = reader.ReadInt32(), verts = reader.ReadInt32(), faces = reader.ReadInt32();
+            if ((version != 1 && version != 2) || splats < 1 || splats > MaxSplats ||
+                verts < 3 || verts > MaxVertices || faces < 1 || faces > MaxFaces ||
+                (version == 1 && (splats != LegacySplats || verts != LegacyVertices || faces != LegacyFaces)) ||
+                file.Length != (version == 2 ? 32L : 20L) + verts * 64L + faces * 12L + splats * 324L)
+                throw new InvalidDataException("Unsupported XRG avatar dimensions or version.");
+            if (version == 2) neck = ReadVector(reader, 1);
+            void ReadIndices(int count, int max, int[] destination)
             {
-                deltas[c] = new Vector3[VertexCount];
-                for (int i = 0; i < VertexCount; i++) deltas[c][i] = ReadVector(reader, .25f);
-            }
-            void ReadIndices(int[] a, int max)
-            {
-                for (int i = 0; i < a.Length; i++)
+                for (int i = 0; i < count; i++)
                 {
-                    a[i] = reader.ReadInt32();
-                    if ((uint)a[i] >= (uint)max) throw new InvalidDataException("Out of range 306 binding.");
+                    int index = reader.ReadInt32();
+                    if ((uint)index >= (uint)max) throw new InvalidDataException("Out of range XRG binding.");
+                    if (destination != null) destination[i] = index;
                 }
             }
-            ReadIndices(triangles, VertexCount);
-            ReadIndices(bindings, FaceCount);
-            var data = new Frame[SplatCount];
-            var colors = new Vector4[SplatCount * 16];
-            for (int i = 0; i < data.Length; i++)
+            void ReadPayload(Frame[] data, Vector4[] colors)
             {
-                data[i].center = Read4(reader, 1000, 0, 1);
-                localCenters[i] = data[i].center;
-                data[i].x = Read4(reader, 1000, 0, 0);
-                data[i].y = Read4(reader, 1000, 0, 0);
-                data[i].z = Read4(reader, 1000, 0, 0);
+                bool populate = data != null;
+                for (int i = 0; i < verts; i++)
+                {
+                    var value = ReadVector(reader, 1);
+                    if (populate) rest[i] = value;
+                }
+                for (int i = 0; i < verts; i++)
+                {
+                    float value = ReadFloat(reader, 0, 1);
+                    if (populate) influence[i] = value;
+                }
+                for (int c = 0; c < ChannelCount; c++)
+                    for (int i = 0; i < verts; i++)
+                    {
+                        var value = ReadVector(reader, .25f);
+                        if (populate) deltas[c][i] = value;
+                    }
+                ReadIndices(faces * 3, verts, populate ? triangles : null);
+                ReadIndices(splats, faces, populate ? bindings : null);
+                for (int i = 0; i < splats; i++)
+                {
+                    var value = new Frame {
+                        center = Read4(reader, 1000, 0, 1), x = Read4(reader, 1000, 0, 0),
+                        y = Read4(reader, 1000, 0, 0), z = Read4(reader, 1000, 0, 0) };
+                    if (!populate) continue;
+                    data[i] = value;
+                    localCenters[i] = value.center;
+                }
+                for (int i = 0; i < splats * 16; i++)
+                {
+                    var value = Read4(reader, 100, 0, 0);
+                    if (populate) colors[i] = value;
+                }
             }
-            for (int i = 0; i < colors.Length; i++) colors[i] = Read4(reader, 100, 0, 0);
+            // Validate the bounded on-disk payload before allocating model arrays or GPU buffers.
+            long payload = file.Position;
+            ReadPayload(null, null);
+            file.Position = payload;
+            rest = new Vector3[verts]; vertices = new Vector3[verts]; influence = new float[verts];
+            for (int c = 0; c < ChannelCount; c++) deltas[c] = new Vector3[verts];
+            triangles = new int[faces * 3]; frames = new Frame[faces]; faceDepth = new float[faces];
+            bindings = new int[splats]; localCenters = new Vector3[splats]; order = new int[splats];
+            depth = new float[splats]; depthKeys = new ushort[splats];
+            var data = new Frame[splats];
+            var colors = new Vector4[splats * 16];
+            ReadPayload(data, colors);
 
             frameBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, FaceCount, 64);
             points = new GraphicsBuffer(GraphicsBuffer.Target.Structured, SplatCount, 64);
@@ -150,6 +185,7 @@ namespace XReality
             Refresh(Quaternion.identity, Vector4.zero);
             hidden = true;
             foreach (var r in sources) r.forceRenderingOff = true;
+            Debug.Log($"XR_XRG_LOADED: version {version}, {splats} splats, {verts} vertices, {faces} faces");
         }
 
         internal void Refresh(Quaternion stageHead, Vector4 controls)
@@ -164,7 +200,7 @@ namespace XReality
             for (int i = 0; i < vertices.Length; i++)
             {
                 var v = rest[i] + deltas[0][i]*controls.x + deltas[1][i]*controls.y + deltas[2][i]*controls.z + deltas[3][i]*controls.w;
-                vertices[i] = Vector3.LerpUnclamped(v, Neck + rotation * (v - Neck), influence[i]);
+                vertices[i] = Vector3.LerpUnclamped(v, neck + rotation * (v - neck), influence[i]);
             }
             for (int i = 0; i < frames.Length; i++)
             {
@@ -213,7 +249,6 @@ namespace XReality
             frameBuffer.SetData(frames); orderBuffer.SetData(order);
         }
 
-        readonly float[] faceDepth = new float[FaceCount];
         static Vector3 Normalize(Vector3 v) => v / Mathf.Sqrt(Mathf.Max(v.sqrMagnitude, 1e-20f));
         static float ReadFloat(BinaryReader reader, float min, float max)
         {

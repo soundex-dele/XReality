@@ -1,8 +1,7 @@
 """Local, research-only frozen-frame export of the upstream GaussianAvatars fixture."""
 from pathlib import Path
-import os, pickle, struct, sys
+import os, struct, sys
 import numpy as np
-import scipy.sparse
 from scipy.spatial.transform import Rotation
 import torch
 
@@ -10,39 +9,10 @@ base = Path(__file__).resolve().parents[2] / 'Builds/GaussianAvatars-306'
 upstream = base / 'upstream'
 os.chdir(upstream)
 sys.path.insert(0, str(upstream))
-from flame_model.flame import FlameHead
 
-class ChArray:
-    """The official 2023 pickle contains a legacy chumpy array; only use its stored x."""
-    def __setstate__(self, state): self.x = state['x']
-    def __array__(self, dtype=None, copy=None):
-        result = np.asarray(self.x, dtype=dtype)
-        return result.copy() if copy else result
+from flame_local import load_head
 
-class ModelReader(pickle.Unpickler):
-    allowed = {
-        ('numpy.core.multiarray', '_reconstruct'): np._core.multiarray._reconstruct,
-        ('numpy', 'ndarray'): np.ndarray,
-        ('numpy', 'dtype'): np.dtype,
-        ('scipy.sparse.csc', 'csc_matrix'): scipy.sparse.csc_matrix,
-        ('chumpy.ch', 'Ch'): ChArray,
-        ('__builtin__', 'set'): set,
-    }
-    def find_class(self, module, name):
-        try: return self.allowed[(module, name)]
-        except KeyError: raise pickle.UnpicklingError(f'Unexpected FLAME pickle reference: {module}.{name}') from None
-
-# FLAME uses pickle.load in its constructor to read the two supplied model files.
-original = pickle.load
-try:
-    def read_pkl(file, **kw):
-        if isinstance(getattr(file, 'name', None), str) and Path(file.name).name in ('flame2023.pkl', 'FLAME_masks.pkl'):
-            return ModelReader(file, **kw).load()
-        return original(file, **kw)  # Embedded landmark data from the pinned upstream repository.
-    pickle.load = read_pkl
-    head = FlameHead(shape_params=300, expr_params=100, include_mask=True, add_teeth=True).eval()
-finally:
-    pickle.load = original
+head = load_head()
 frame = 0
 with np.load('media/306/flame_param.npz', allow_pickle=False) as motion, torch.no_grad():
     def tensor(key, index=None):
