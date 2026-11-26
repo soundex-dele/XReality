@@ -170,6 +170,11 @@ namespace XReality
             if (!live || live.enabled || !live.capture || live.capture.Active || FindFirstObjectByType<PetRoom>())
                 throw new InvalidOperationException("Packaged live scene isolation or capture state is invalid.");
             Debug.Log("XR_PLAYER_HOME_ROUTES_OK: rendered menu; pet entry; home return; live entry, camera inactive");
+            if (Array.Exists(Environment.GetCommandLineArgs(), arg => string.Equals(arg, StaticGaussianProp.Flag, StringComparison.OrdinalIgnoreCase)))
+            {
+                CaptureStaticProp(live);
+                yield break;
+            }
             if (Gaussian306Live.Requested(Environment.GetCommandLineArgs()))
             {
                 Capture306(live);
@@ -235,6 +240,48 @@ namespace XReality
             Debug.Log("XR_PLAYER_BUNDLED_MODEL_OK: verified packaged model selected, offline; camera inactive");
             foreach (var step in CaptureDeviceSelection(live, bundledSetup)) yield return step;
             foreach (var step in CaptureLiveSafety(live)) yield return step;
+        }
+
+        void CaptureStaticProp(LiveStudio live)
+        {
+            var prop = live.StartStaticProp(Environment.GetCommandLineArgs());
+            if (prop == null) throw new InvalidOperationException("The packaged player did not load the supplied XRS.");
+            live.ToggleOutput();
+            if (live.capture.Active || !live.capture.CleanOutput)
+                throw new InvalidOperationException("XRS QA requires clean output and an inactive camera capture.");
+
+            Color32[] Save(string name)
+            {
+                prop.Place();
+                return OffscreenFrame.Save(live.stageCamera, folder, name, true);
+            }
+
+            var front = Save("XrsFront");
+            prop.Control(70, 0, false, false);
+            var rotated = Save("XrsRotated");
+            prop.Control(0, .35f, false, false);
+            var zoomed = Save("XrsZoomed");
+            prop.Control(0, 0, false, true);
+            var hidden = Save("XrsHidden");
+            prop.Control(0, 0, true, true);
+            var reset = Save("XrsReset");
+
+            // Subtract the same frame with the prop hidden; verify that only
+            // the right-side prop changes, not the presenter or the backdrop.
+            int footprint = 0, rotation = 0, zoom = 0;
+            for (int i = 0; i < front.Length; ++i)
+            {
+                if (!front[i].Equals(reset[i])) throw new InvalidOperationException("XRS reset did not restore the original frame.");
+                if (!front[i].Equals(rotated[i])) rotation++;
+                if (!rotated[i].Equals(zoomed[i])) zoom++;
+                if (front[i].Equals(hidden[i])) continue;
+                if (i % OffscreenFrame.Width < OffscreenFrame.Width * 3 / 5)
+                    throw new InvalidOperationException("XRS visibility changed the presenter area.");
+                footprint++;
+            }
+            if (footprint < 100 || rotation < 100 || zoom < 100)
+                throw new InvalidOperationException($"XRS is missing or controls had no visible effect: {footprint}/{rotation}/{zoom} changed pixels.");
+            Debug.Log($"XR_PLAYER_XRS_OK: {prop.Count} static splats; hide/rotate/zoom changed {footprint}/{rotation}/{zoom} pixels; exact reset");
         }
 
         void Capture306(LiveStudio live)

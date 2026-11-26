@@ -35,6 +35,15 @@ namespace XReality
             if (Gaussian306Live.Requested(args)) Start306(args);
             else if (Array.Exists(args, arg => string.Equals(arg, GaussianFlag, StringComparison.OrdinalIgnoreCase)))
                 StartGaussianPresenter();
+            StartStaticProp(args);
+            RefreshInstalledModel();
+            RefreshDevices(EnumerateDevices);
+            ShowDesk(true);
+        }
+
+        internal StaticGaussianProp StartStaticProp(string[] args)
+        {
+            if (staticProp != null) return staticProp;
             int propArg = Array.FindIndex(args, arg => string.Equals(arg, StaticGaussianProp.Flag, StringComparison.OrdinalIgnoreCase));
             if (propArg >= 0)
             {
@@ -47,9 +56,7 @@ namespace XReality
                     Debug.LogWarning("XR_XRS_FALLBACK: no valid static prop; keeping the studio and presenter.");
                 }
             }
-            RefreshInstalledModel();
-            RefreshDevices(EnumerateDevices);
-            ShowDesk(true);
+            return staticProp;
         }
 
         internal bool Start306(string[] args)

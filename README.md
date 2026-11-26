@@ -55,4 +55,12 @@ Windows/D3D11 可选后端：先烘焙样例，开播时复用现有摄像头面
 
 道具出现在画面右侧，不替换或遮蔽主播渲染组件，也不需要 Unity 安装 Python/CUDA。J/L 旋转、I/K 缩放、U 复位、O 显示或隐藏；F8 干净输出继续包含可见道具。路由不兼容普通 PLY 或数字人 `.xrg`，不提供网格碰撞和应用内选文件。无效资产只省略道具，不改变主播和场景。
 
+对从工作台下载的真实 `.xrs`，先构建当前版本的 Windows Player，再运行：
+
+```powershell
+python Tests/splat_object_screenshots.py 'D:\Downloads\object.xrs' --sha256 '<模型资源 SHA-256>'
+```
+
+该脚本使用 D3D11 批处理模式验证道具显示、旋转、缩放、隐藏和复位，不启动摄像头；输出截图、日志和哈希清单到 `Builds/QA-XRS/real-object-player-*`。`--sha256` 可省略，但端到端验收建议用工作台发布的哈希校对。
+
 在 Unity D3D11 批处理模式使用 `-executeMethod XReality.StaticGaussianPropQA.Run` 可用合成 XRS 验证离屏渲染、旋转、缩放、重置、隐藏及无效文件拒绝。它不替代真实绕拍重建验收。
